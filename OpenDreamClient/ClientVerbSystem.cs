@@ -151,7 +151,7 @@ public sealed partial class ClientVerbSystem : VerbSystem {
                     case VerbAccessibility.InRange:
                     case VerbAccessibility.ORange:
                     case VerbAccessibility.InORange: {
-                        if(_playerManager.LocalEntity is not null)
+                        if (_playerManager.LocalEntity is null)
                             continue;
                         if(verb.Range < 0)
                             continue;
@@ -178,9 +178,8 @@ public sealed partial class ClientVerbSystem : VerbSystem {
                                 continue;
                         }
 
-                        if(verb.Accessibility.IsView()) {
-                            // TODO
-                        }
+                        if (verb.Accessibility.IsView() && !viewOverlay.IsWorldPositionVisible(_transformSystem.GetWorldPosition(srcXform)))
+                            continue;
 
                         break;
                     }
@@ -191,7 +190,65 @@ public sealed partial class ClientVerbSystem : VerbSystem {
             }
         }
 
-        // TODO: Turfs, Areas
+        foreach (var turf in viewOverlay.VisibleTurfs) {
+            foreach (var verbId in turf.Appearance.Verbs) {
+                if (!_verbs.TryGetValue(verbId, out var verb))
+                    continue;
+                if (verb.IsHidden(ignoreHiddenAttr, seeInvisibility ?? 0))
+                    continue;
+                if (!TurfVerbAccessible(verb, turf.WorldPosition, viewOverlay))
+                    continue;
+
+                yield return (verbId, turf.Reference, verb);
+            }
+        }
+
+        // Areas are not replicated to the client, so area verbs cannot be listed here.
+    }
+
+    private bool TurfVerbAccessible(VerbInfo verb, Vector2 turfWorldPos, DreamViewOverlay viewOverlay) {
+        switch (verb.Accessibility) {
+            case VerbAccessibility.Usr:
+            case VerbAccessibility.InUsr:
+            case VerbAccessibility.UsrGroup:
+                return false;
+            case VerbAccessibility.InWorld:
+                return true;
+            case VerbAccessibility.UsrLoc: {
+                if (_playerManager.LocalEntity is not { } usr)
+                    return false;
+                if (!_xformQuery.TryGetComponent(usr, out var usrXform))
+                    return false;
+
+                var usrPos = _transformSystem.GetWorldPosition(usrXform);
+                return Math.Abs(usrPos.X - turfWorldPos.X) < 1f && Math.Abs(usrPos.Y - turfWorldPos.Y) < 1f;
+            }
+            case VerbAccessibility.View:
+            case VerbAccessibility.InView:
+            case VerbAccessibility.OView:
+            case VerbAccessibility.InOView:
+            case VerbAccessibility.Range:
+            case VerbAccessibility.InRange:
+            case VerbAccessibility.ORange:
+            case VerbAccessibility.InORange: {
+                if (_playerManager.LocalEntity is not { } usr)
+                    return false;
+                if (verb.Range < 0)
+                    return false;
+                if (!_xformQuery.TryGetComponent(usr, out var usrXform))
+                    return false;
+
+                var usrPos = _transformSystem.GetWorldPosition(usrXform);
+                if (Math.Abs(usrPos.X - turfWorldPos.X) > verb.Range || Math.Abs(usrPos.Y - turfWorldPos.Y) > verb.Range)
+                    return false;
+                if (verb.Accessibility.IsView() && !viewOverlay.IsWorldPositionVisible(turfWorldPos))
+                    return false;
+
+                return true;
+            }
+            default:
+                return false;
+        }
     }
 
     /// <summary>

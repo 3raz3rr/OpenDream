@@ -11,7 +11,14 @@ void fragment() {
     highp float shadow_blur_samples = pow((size * 2.0 + 1.0), 2.0);
     highp vec4 texture_color = zTexture(UV);
     highp vec2 ps = TEXTURE_PIXEL_SIZE;
-    highp vec2 shadow_uv = UV - (ps * vec2(x, -y)); // Y is up
+    // offset is extra pixels along the x/y direction, on top of the pixel shift.
+    highp vec2 shift = vec2(x, -y); // Y is up
+    highp float shift_len = length(shift);
+    if (shift_len > 0.0)
+        shift += (shift / shift_len) * offset;
+    else
+        shift = vec2(offset, 0.0);
+    highp vec2 shadow_uv = UV - (ps * shift);
     
     highp float sampled_shadow_alpha = 0.0;
     for (highp float blur_x = -size; blur_x <= size; blur_x++) {

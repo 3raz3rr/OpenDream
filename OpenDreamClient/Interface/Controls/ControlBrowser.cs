@@ -12,6 +12,7 @@ using Robust.Client.WebView;
 using Robust.Shared.Console;
 using Robust.Shared.ContentPack;
 using Robust.Shared.Network;
+using Robust.Shared.Timing;
 using Robust.Shared.Utility;
 
 namespace OpenDreamClient.Interface.Controls;
@@ -38,7 +39,9 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     private readonly ISawmill _sawmill = Logger.GetSawmill("opendream.browser");
 
     private PanelContainer _panel = default!;
-    private WebViewControl _webView = default!;
+    private WebViewControl? _webView;
+    private readonly Queue<string> _urlQueue = new();
+    private bool _urlPump;
 
     public ControlBrowser(ControlDescriptor controlDescriptor, ControlWindow window)
         : base(controlDescriptor, window) {
@@ -46,28 +49,33 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     }
 
     protected override Control CreateUIElement() {
-        _panel = new PanelContainer {
-            Children = {
-                (_webView = new WebViewControl {AlwaysActive = true})
-            }
-        };
+        // CEF times out if a WebView is created before its OS window exists, and the
+        // skin has several browsers that are never shown. Create the view on first use.
+        _panel = new PanelContainer();
 
-        _webView.AddResourceRequestHandler(RequestHandler);
-        _webView.AddBeforeBrowseHandler(BeforeBrowseHandler);
-        _webView.OnVisibilityChanged += (args) => {
-            if (args.Visible) {
-                OnShowEvent();
-            } else {
-                OnHideEvent();
-            }
-        };
-
-        if(ControlDescriptor.IsVisible.Value)
+        if (ControlDescriptor.IsVisible.Value)
             OnShowEvent();
         else
             OnHideEvent();
 
         return _panel;
+    }
+
+    private WebViewControl EnsureWebView() {
+        if (_webView != null)
+            return _webView;
+
+        var webView = new WebViewControl {
+            AlwaysActive = true,
+            HorizontalExpand = true,
+            VerticalExpand = true,
+            MinSize = new Vector2(Math.Max(ControlDescriptor.Size.X, 64), Math.Max(ControlDescriptor.Size.Y, 64))
+        };
+        webView.AddResourceRequestHandler(RequestHandler);
+        webView.AddBeforeBrowseHandler(BeforeBrowseHandler);
+        _panel.AddChild(webView);
+        _webView = webView;
+        return webView;
     }
 
     protected override void UpdateElementDescriptor() {
@@ -88,22 +96,40 @@ internal sealed partial class ControlBrowser : InterfaceControl {
         }
 
         // Insert the values directly into JS and execute it (what could go wrong??)
-        _webView.ExecuteJavaScript($"{jsFunction}({string.Join(",", parts)})");
+        EnsureWebView().ExecuteJavaScript($"{jsFunction}({string.Join(",", parts)})");
     }
 
     public void SetFileSource(ResPath? filepath) {
-        if (filepath != null) {
-            // hostname must be the localhost IP for TGUI to work properly
-            _webView.Url = "http://127.0.0.1/" + filepath;
-        } else {
-            _webView.Url = "about:blank";
+        if (filepath == null) {
+            _urlQueue.Clear();
+            if (_webView != null)
+                _webView.Url = "about:blank";
+            return;
         }
+
+        // hostname must be the localhost IP for TGUI to work properly.
+        // Asset cache browses this control many times in one tick; CEF drops frames if they all start at once.
+        _urlQueue.Enqueue("http://127.0.0.1/" + filepath);
+        PumpUrls();
+    }
+
+    private void PumpUrls() {
+        if (_urlPump || _urlQueue.Count == 0)
+            return;
+
+        var url = _urlQueue.Dequeue();
+        _urlPump = true;
+        EnsureWebView().Url = url;
+        Timer.Spawn(TimeSpan.FromMilliseconds(150), () => {
+            _urlPump = false;
+            PumpUrls();
+        });
     }
 
     private void BeforeBrowseHandler(IBeforeBrowseContext context) {
         // An exception in here will freeze up / crash CEF, so catch any
         try {
-            if (string.IsNullOrEmpty(_webView.Url))
+            if (_webView == null || string.IsNullOrEmpty(_webView.Url))
                 return;
 
             Uri oldUri = new Uri(_webView.Url);
@@ -183,22 +209,20 @@ internal sealed partial class ControlBrowser : InterfaceControl {
         string? element = queryParams.Get("element");
         queryParams.Remove("element");
 
-        // Wrap each parameter in quotes so the entire value is used
+        // Join as winset syntax. QueryString uses '&', which would split values that contain '&'.
+        var parts = new List<string>(queryParams.Count);
         foreach (var paramKey in queryParams.AllKeys) {
+            if (paramKey == null)
+                continue;
+
             var paramValue = queryParams[paramKey];
             if (paramValue == null)
                 continue;
 
-            queryParams.Set(paramKey, $"\"{paramValue}\"");
+            parts.Add($"{paramKey}=\"{paramValue}\"");
         }
 
-        // Reassemble the query params without element then convert to winset syntax
-        var modifiedQuery = queryParams.ToString();
-        modifiedQuery = HttpUtility.UrlDecode(modifiedQuery);
-        modifiedQuery = modifiedQuery!.Replace('&', ';'); // TODO: More robust parsing
-
-        // We can finally call winset
-        InterfaceManager.WinSet(element, modifiedQuery);
+        InterfaceManager.WinSet(element, string.Join(';', parts));
     }
 
     /// <summary>
@@ -220,20 +244,34 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             return;
         }
 
-        // TG uses property=* but really just wants size
-        // TODO: Actual winget * support
-        bool forceJson = true;
+        // property=* returns every known property as raw strings, not JSON.
+        var element = InterfaceManager.FindElementWithId(elementId);
+        bool forceJson = property != "*";
+        string[] properties;
         if (property == "*") {
-            property = "size";
-            forceJson = false; // property=* does not return "as json" values (why?!)
-        }
+            if (element == null) {
+                _sawmill.Error($"Could not winget element {elementId} because it does not exist");
+                return;
+            }
 
-        // Multiple properties can be queried in a single winget with "&property=size,view-size"
-        var properties = property.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            properties = element.EnumerateProperties();
+        } else {
+            // Multiple properties can be queried in a single winget with "&property=size,view-size"
+            properties = property.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        }
         var jsonBuilder = new StringBuilder(); // Build the JSON object that the callback receives
 
         jsonBuilder.Append("{ ");
         foreach (var wingetting in properties) {
+            string result;
+            if (!forceJson && element != null && element.TryGetProperty(wingetting, out var prop)) {
+                result = prop.AsRaw();
+            } else if (forceJson) {
+                result = InterfaceManager.WinGet(elementId, wingetting, forceJson: true);
+            } else {
+                continue;
+            }
+
             if (jsonBuilder.Length > 2)
                 jsonBuilder.Append(", ");
 
@@ -241,7 +279,6 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             jsonBuilder.Append(HttpUtility.JavaScriptStringEncode(wingetting));
             jsonBuilder.Append("\": ");
 
-            var result = InterfaceManager.WinGet(elementId, wingetting, forceJson: forceJson);
             if (forceJson) {
                 jsonBuilder.Append(result);
             } else {
@@ -255,7 +292,7 @@ internal sealed partial class ControlBrowser : InterfaceControl {
 
         // Execute the callback
         var json = jsonBuilder.ToString();
-        _webView.ExecuteJavaScript($"{callback}({json})");
+        _webView?.ExecuteJavaScript($"{callback}({json})");
     }
 
     private void OnShowEvent() {

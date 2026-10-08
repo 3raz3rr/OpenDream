@@ -243,6 +243,8 @@ public sealed class InterfaceMacro : InterfaceElement {
     private readonly bool _isRepeating;
     private readonly bool _isRelease;
     private readonly bool _isAny;
+    private bool _active = true;
+    private bool _listeningAny;
 
     public InterfaceMacro(string contextName, MacroDescriptor descriptor, IEntitySystemManager entitySystemManager, IInputManager inputManager, IInputCmdContext inputContext, IUserInterfaceManager uiManager) : base(descriptor) {
         _entitySystemManager = entitySystemManager;
@@ -271,6 +273,7 @@ public sealed class InterfaceMacro : InterfaceElement {
             throw new Exception("A macro cannot be both +REP and +UP");
 
         if (_isAny) {
+            _listeningAny = true;
             inputManager.FirstChanceOnKeyEvent += FirstChanceKeyHandler;
             return;
         }
@@ -285,7 +288,20 @@ public sealed class InterfaceMacro : InterfaceElement {
         inputManager.SetInputCommand(function, InputCmdHandler.FromDelegate(OnMacroPress, OnMacroRelease, outsidePrediction: false));
     }
 
+    /// <summary>
+    /// winset parent=null. The binding stays registered, but it no longer runs.
+    /// </summary>
+    public void Disable() {
+        _active = false;
+        if (_listeningAny) {
+            _inputManager.FirstChanceOnKeyEvent -= FirstChanceKeyHandler;
+            _listeningAny = false;
+        }
+    }
+
     private void FirstChanceKeyHandler(KeyEventArgs args, KeyEventType type) {
+        if (!_active)
+            return;
         if (_inputManager.Contexts.ActiveContext != _inputContext) // don't trigger macro if we're not in the right context / macro set
             return;
         if (!_isAny) // this is where we handle only the ANY macros
@@ -310,7 +326,7 @@ public sealed class InterfaceMacro : InterfaceElement {
     }
 
     private void OnMacroPress(ICommonSession? session) {
-        if (string.IsNullOrEmpty(Command))
+        if (!_active || string.IsNullOrEmpty(Command))
             return;
         if (_isRelease)
             return;
@@ -318,7 +334,7 @@ public sealed class InterfaceMacro : InterfaceElement {
     }
 
     private void OnMacroRelease(ICommonSession? session) {
-        if (string.IsNullOrEmpty(Command))
+        if (!_active || string.IsNullOrEmpty(Command))
             return;
 
         if (_isRepeating) {

@@ -55,6 +55,7 @@ public abstract class InterfaceControl : InterfaceElement {
                 break;
             case LineEdit lineEdit:
                 lineEdit.StyleBoxOverride = styleBox;
+                lineEdit.Editable = !ControlDescriptor.IsDisabled.Value;
                 break;
             case Button button:
                 button.StyleBoxOverride = styleBox;
@@ -72,8 +73,9 @@ public abstract class InterfaceControl : InterfaceElement {
         }
 
         UIElement.Visible = ControlDescriptor.IsVisible.Value;
-        // TODO: enablement
-        //UIControl.IsEnabled = !_controlDescriptor.IsDisabled;
+        var disabled = ControlDescriptor.IsDisabled.Value;
+        if (UIElement is BaseButton baseButton)
+            baseButton.Disabled = disabled;
     }
 
     public override bool TryGetProperty(string property, [NotNullWhen(true)] out IDMFProperty? value) {

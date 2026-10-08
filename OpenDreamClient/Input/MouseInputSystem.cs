@@ -14,6 +14,7 @@ using Robust.Shared.Configuration;
 using Robust.Shared.Input;
 using Robust.Shared.Input.Binding;
 using Robust.Shared.Map;
+using Matrix3x2 = System.Numerics.Matrix3x2;
 
 namespace OpenDreamClient.Input;
 
@@ -136,7 +137,11 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
 
             return (turf.Value.Atom, turf.Value.IconPosition, false);
         } else {
-            var iconPosition = (Vector2i) ((mapCoords.Position - underMouse.Position) * _dreamInterfaceManager.IconSize);
+            ImmutableAppearance? appearance = null;
+            if (_entityManager.TryGetComponent(underMouse.ClickUid, out DMISpriteComponent? sprite))
+                appearance = sprite.Icon.Appearance;
+
+            var iconPosition = IconPixelPosition(mapCoords.Position - underMouse.Position, appearance);
             var reference = new ClientObjectReference(_entityManager.GetNetEntity(underMouse.ClickUid));
 
             return (reference, iconPosition, underMouse.IsScreen);
@@ -151,7 +156,8 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
             Vector2i position = _mapSystem.CoordinatesToTile(gridEntity, grid, _mapSystem.MapToGrid(gridEntity, mapCoords));
             _mapSystem.TryGetTile(grid, position, out Tile tile);
             turfId = (uint)tile.TypeId;
-            Vector2i turfIconPosition = (Vector2i) ((mapCoords.Position - position) * _dreamInterfaceManager.IconSize);
+            var turfAppearance = _appearanceSystem.GetTurfIcon(turfId.Value).Appearance;
+            Vector2i turfIconPosition = IconPixelPosition(mapCoords.Position - position, turfAppearance);
             MapCoordinates worldPosition = _mapSystem.GridTileToWorld(gridEntity, grid, position);
 
             return (new(position, (int)worldPosition.MapId), turfIconPosition);
@@ -261,9 +267,8 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
         UIBox2i viewportBox = viewport.GetDrawBox();
         Vector2 screenLocPos = (args.RelativePixelPosition - viewportBox.TopLeft) / viewportBox.Size * viewport.ViewportSize;
         float screenLocY = viewport.ViewportSize.Y - screenLocPos.Y; // Flip the Y
-        ScreenLocation screenLoc = new ScreenLocation((int)screenLocPos.X, (int)screenLocY, 32); // TODO: icon_size other than 32
+        ScreenLocation screenLoc = new ScreenLocation((int)screenLocPos.X, (int)screenLocY, IconSize);
 
-        // TODO: Take icon transformations into account for iconPos
         return new(screenLoc, right, middle, shift, ctrl, alt, iconPos.X, iconPos.Y);
     }
 
@@ -275,10 +280,33 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
         UIBox2i viewportBox = viewport.GetDrawBox();
         Vector2 screenLocPos = (relativePos - viewportBox.TopLeft) / viewportBox.Size * viewport.ViewportSize;
         float screenLocY = viewport.ViewportSize.Y - screenLocPos.Y; // Flip the Y
-        ScreenLocation screenLoc = new ScreenLocation((int) screenLocPos.X, (int) screenLocY, 32); // TODO: icon_size other than 32
+        ScreenLocation screenLoc = new ScreenLocation((int) screenLocPos.X, (int) screenLocY, IconSize);
 
-        // TODO: Take icon transformations into account for iconPos
         return new(screenLoc, false, false, false, false, false, iconPos.X, iconPos.Y);
+    }
+
+    private int IconSize => Math.Max(_dreamInterfaceManager.IconSize, 1);
+
+    /// <summary>
+    /// Pixel offset inside the icon. Icon transforms are inverted around the icon center, matching BYOND's icon-x/icon-y.
+    /// </summary>
+    private Vector2i IconPixelPosition(Vector2 worldDelta, ImmutableAppearance? appearance) {
+        var pixels = worldDelta * IconSize;
+        var transform = appearance?.Transform;
+        if (transform is not { Length: >= 6 })
+            return (Vector2i)pixels;
+
+        var identity = transform[0] == 1f && transform[1] == 0f && transform[2] == 0f &&
+                       transform[3] == 1f && transform[4] == 0f && transform[5] == 0f;
+        if (identity)
+            return (Vector2i)pixels;
+
+        var matrix = new Matrix3x2(transform[0], transform[1], transform[2], transform[3], transform[4], transform[5]);
+        if (!Matrix3x2.Invert(matrix, out var inverse))
+            return (Vector2i)pixels;
+
+        var center = new Vector2(IconSize / 2f, IconSize / 2f);
+        return (Vector2i)(Vector2.Transform(pixels - center, inverse) + center);
     }
 
     private bool HasMouseEventEnabled(ClientObjectReference atomRef, AtomMouseEvents mouseEvent) {

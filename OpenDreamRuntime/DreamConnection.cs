@@ -272,7 +272,12 @@ public sealed partial class DreamConnection {
                     Channel = sound.Channel,
                     Volume = sound.Volume,
                     Offset = sound.Offset,
-                    Repeat = sound.Repeat
+                    Repeat = sound.Repeat,
+                    HasPosition = sound.PositionSet,
+                    PosX = sound.PosX,
+                    PosY = sound.PosY,
+                    PosZ = sound.PosZ,
+                    Falloff = sound.Falloff
                 }
             };
 

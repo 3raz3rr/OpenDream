@@ -4,10 +4,12 @@ using Robust.Client.ResourceManagement;
 using Robust.Client.State;
 using Robust.Client.UserInterface;
 using Robust.Client.UserInterface.Controls;
+using OpenDreamShared;
 using Robust.Shared;
 using Robust.Shared.AuthLib;
 using Robust.Shared.Configuration;
 using Robust.Shared.Network;
+using Robust.Shared.Timing;
 using Robust.Shared.Utility;
 
 namespace OpenDreamClient.States.MainMenu;
@@ -22,6 +24,7 @@ public sealed partial class MainMenuState : State {
 
     private MainMenuControl _mainMenuControl = default!;
     private bool _isConnecting;
+    private bool _autoConnectPending;
 
     // ReSharper disable once InconsistentNaming
     private static readonly Regex IPv6Regex = new(@"\[(.*:.*:.*)](?::(\d+))?");
@@ -36,6 +39,28 @@ public sealed partial class MainMenuState : State {
         _mainMenuControl.UserNameBox.OnTextChanged += UsernameBoxChanged;
 
         _client.RunLevelChanged += RunLevelChanged;
+        TryAutoConnect();
+    }
+
+    private void TryAutoConnect() {
+        var address = _configurationManager.GetCVar(OpenDreamCVars.ConnectAddress);
+        if (string.IsNullOrWhiteSpace(address))
+            return;
+
+        _mainMenuControl.AddressBox.Text = address;
+        _autoConnectPending = true;
+    }
+
+    public override void FrameUpdate(FrameEventArgs e) {
+        if (!_autoConnectPending)
+            return;
+
+        // Connecting inside Startup races the client's own Initialize reset.
+        _autoConnectPending = false;
+        if (string.IsNullOrWhiteSpace(_mainMenuControl.UserNameBox.Text))
+            _mainMenuControl.UserNameBox.Text = "Guest";
+
+        TryConnect(_mainMenuControl.AddressBox.Text);
     }
 
     protected override void Shutdown() {

@@ -23,6 +23,13 @@ public abstract class OpenDreamCVars {
     public static readonly CVarDef<bool> SpoofIEUserAgent =
         CVarDef.Create("opendream.spoof_ie_user_agent", false, CVar.CLIENTONLY);
 
+    /// <summary>
+    /// If set, the main menu connects to this address as soon as it opens.
+    /// Example: 127.0.0.1:1212
+    /// </summary>
+    public static readonly CVarDef<string> ConnectAddress =
+        CVarDef.Create("opendream.connect_address", string.Empty, CVar.CLIENTONLY);
+
     public static readonly CVarDef<string> WorldParams =
         CVarDef.Create("opendream.world_params", string.Empty, CVar.SERVERONLY);
 

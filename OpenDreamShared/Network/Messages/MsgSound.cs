@@ -73,6 +73,18 @@ namespace OpenDreamShared.Network.Messages {
         /// </summary>
         public string File = string.Empty;
 
+        /// <summary>
+        /// True when the sound has a world position (sound.x/y/z were set).
+        /// </summary>
+        public bool HasPosition;
+
+        public int PosX, PosY, PosZ;
+
+        /// <summary>
+        /// BYOND falloff. 1 is the normal distance curve.
+        /// </summary>
+        public float Falloff = 1;
+
         public SoundData(NetIncomingMessage buffer) {
             ReadFromBuffer(buffer);
         }
@@ -84,6 +96,13 @@ namespace OpenDreamShared.Network.Messages {
             Length = buffer.ReadFloat();
             Repeat = buffer.ReadByte();
             File = buffer.ReadString();
+            HasPosition = buffer.ReadBoolean();
+            if (HasPosition) {
+                PosX = buffer.ReadInt32();
+                PosY = buffer.ReadInt32();
+                PosZ = buffer.ReadInt32();
+                Falloff = buffer.ReadFloat();
+            }
         }
 
         public void WriteToBuffer(NetOutgoingMessage buffer) {
@@ -93,6 +112,13 @@ namespace OpenDreamShared.Network.Messages {
             buffer.Write(Length);
             buffer.Write(Repeat);
             buffer.Write(File);
+            buffer.Write(HasPosition);
+            if (HasPosition) {
+                buffer.Write(PosX);
+                buffer.Write(PosY);
+                buffer.Write(PosZ);
+                buffer.Write(Falloff);
+            }
         }
     }
 }

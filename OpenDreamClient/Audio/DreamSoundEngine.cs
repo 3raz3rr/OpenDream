@@ -3,6 +3,8 @@ using OpenDreamClient.Resources.ResourceTypes;
 using OpenDreamShared.Network.Messages;
 using Robust.Client.Audio;
 using Robust.Shared.Audio;
+using Robust.Shared.GameObjects;
+using Robust.Shared.Map;
 using Robust.Shared.Network;
 
 namespace OpenDreamClient.Audio;
@@ -63,7 +65,15 @@ public sealed partial class DreamSoundEngine : IDreamSoundEngine {
         }
 
         var db = 20 * MathF.Log10(soundData.Volume / 100.0f); // convert from DM volume (0-100) to OpenAL volume (db)
-        var source = _audioSystem.PlayGlobal(stream, null, AudioParams.Default.WithVolume(db).WithPlayOffset(soundData.Offset).WithLoop(soundData.Repeat != 0)); // TODO: Positional audio.
+        var audioParams = AudioParams.Default.WithVolume(db).WithPlayOffset(soundData.Offset).WithLoop(soundData.Repeat != 0);
+        (EntityUid Entity, Robust.Shared.Audio.Components.AudioComponent Component)? source;
+        if (soundData.HasPosition && TryGetSoundCoordinates(soundData, out var coordinates)) {
+            var falloff = soundData.Falloff <= 0f ? 1f : soundData.Falloff;
+            audioParams = audioParams.WithMaxDistance(Math.Max(14f / falloff, 1f)).WithRolloffFactor(falloff);
+            source = _audioSystem.PlayStatic(stream, coordinates, null, audioParams);
+        } else {
+            source = _audioSystem.PlayGlobal(stream, null, audioParams);
+        }
         if (source == null) {
             _sawmill.Error($"Failed to play audio ${sound}");
             return;
@@ -71,6 +81,19 @@ public sealed partial class DreamSoundEngine : IDreamSoundEngine {
 
         _channels[channel - 1] = new DreamSoundChannel(_audioSystem, source.Value, soundData);
     }
+
+    private bool TryGetSoundCoordinates(SoundData soundData, out EntityCoordinates coordinates) {
+        _entitySystemManager.Resolve(ref _mapSystem);
+        if (_mapSystem!.TryGetMap(new MapId(soundData.PosZ), out var mapUid)) {
+            coordinates = new EntityCoordinates(mapUid.Value, new Vector2(soundData.PosX + 0.5f, soundData.PosY + 0.5f));
+            return true;
+        }
+
+        coordinates = default;
+        return false;
+    }
+
+    private SharedMapSystem? _mapSystem;
 
     public void StopChannel(int channel) {
         ref DreamSoundChannel? ch = ref _channels[channel - 1];

@@ -116,6 +116,7 @@ public sealed class ParticleSystem {
     /// A function which takes the life time of this particles and returns the an acceleration to apply to this particle
     /// </summary>
     private Func<float, Vector3, Vector3> _acceleration;
+    private Func<Vector3> _friction;
 
     /// <summary>
     /// Internal store for particles for this system
@@ -138,6 +139,7 @@ public sealed class ParticleSystem {
         _color = args.Color ?? (_ => Color.White);
         _transform = args.Transform ?? (_ => Matrix3x2.Identity);
         _acceleration = args.Acceleration ?? ((_, _) => Vector3.Zero);
+        _friction = args.Friction ?? (() => Vector3.Zero);
 
         _particles = new Particle[_particleCount];
         for (int i = 0; i < _particleCount; i++)
@@ -170,6 +172,7 @@ public sealed class ParticleSystem {
         _color = args.Color ?? (_ => Color.White);
         _transform = args.Transform ?? (_ => Matrix3x2.Identity);
         _acceleration = args.Acceleration ?? ((_, _) => Vector3.Zero);
+        _friction = args.Friction ?? (() => Vector3.Zero);
     }
 
     public void FrameUpdate(FrameEventArgs args) {
@@ -177,9 +180,8 @@ public sealed class ParticleSystem {
         for (int i = 0; i < _particleCount; i++) {
             if (_particles[i].Active) {
                 _particles[i].Lifetime += args.DeltaSeconds;
-                _particles[i].Transform = _baseTransform * _transform(_particles[i].Lifetime);
                 _particles[i].Color = _color(_particles[i].Lifetime);
-                _particles[i].Velocity += _acceleration(_particles[i].Lifetime, _particles[i].Velocity);
+                ApplyTickSample(i);
                 _particles[i].Position += _particles[i].Velocity*args.DeltaSeconds;
                 if(_particles[i].Fadein > _particles[i].Lifetime)
                     _particles[i].Color.A = Math.Clamp(_particles[i].Lifetime/_particles[i].Fadein, 0, 1);
@@ -200,6 +202,8 @@ public sealed class ParticleSystem {
                 _particles[i].Texture = _icon();
                 _particles[i].Position = _spawnPosition();
                 _particles[i].Velocity = _spawnVelocity();
+                _particles[i].Friction = _friction();
+                _particles[i].SampleTick = -1;
                 _particles[i].Transform = _baseTransform * _transform(_particles[i].Lifetime);
                 _particles[i].Color = _color(_particles[i].Lifetime);
                 _particles[i].Lifespan = _lifespan();
@@ -209,6 +213,30 @@ public sealed class ParticleSystem {
                 particlesSpawned++;
             }
         }
+    }
+
+    /// <summary>
+    /// Drift, friction and transform are BYOND tick values (0.1s), not per-frame values.
+    /// Friction is chosen when the particle spawns.
+    /// </summary>
+    private void ApplyTickSample(int i) {
+        const float byondTick = 0.1f;
+        var tick = (int)(_particles[i].Lifetime / byondTick);
+        var previous = _particles[i].SampleTick;
+        if (previous < 0)
+            previous = tick - 1;
+
+        var steps = Math.Clamp(tick - previous, 0, 4);
+        if (steps == 0)
+            return;
+
+        for (var step = 0; step < steps; step++) {
+            var drift = _acceleration(_particles[i].Lifetime, _particles[i].Velocity);
+            _particles[i].Velocity += drift - _particles[i].Velocity * _particles[i].Friction;
+        }
+
+        _particles[i].Transform = _baseTransform * _transform(_particles[i].Lifetime);
+        _particles[i].SampleTick = tick;
     }
 
     public void Draw(DrawingHandleWorld handle, Matrix3x2 transform) {
@@ -229,6 +257,8 @@ internal struct Particle {
     public Texture? Texture;
     public Vector3 Position;
     public Vector3 Velocity;
+    public Vector3 Friction;
+    public int SampleTick;
     public Matrix3x2 Transform;
     public Color Color;
     public float Lifetime;

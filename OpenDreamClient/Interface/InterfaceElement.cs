@@ -68,6 +68,20 @@ public partial class InterfaceElement {
         return false;
     }
 
+    /// <summary>
+    /// Property names stored on this element's descriptor. Used by winget property=*.
+    /// </summary>
+    public string[] EnumerateProperties() {
+        MappingDataNode original =
+            (MappingDataNode)_serializationManager.WriteValue(ElementDescriptor.GetType(), ElementDescriptor, alwaysWrite: true);
+        var names = new string[original.Keys.Count];
+        var index = 0;
+        foreach (var key in original.Keys)
+            names[index++] = key;
+
+        return names;
+    }
+
     // TODO: Replace PopulateElementDescriptor with this
     public virtual void SetProperty(string property, string value, bool manualWinset = false) {
         MappingDataNode node = new() {

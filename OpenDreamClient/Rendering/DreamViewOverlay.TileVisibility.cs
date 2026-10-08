@@ -7,6 +7,24 @@ namespace OpenDreamClient.Rendering;
 internal partial class DreamViewOverlay {
     private ViewAlgorithm.Tile?[,]? _tileInfo;
     private bool _tileInfoDirty;
+    private EntityUid _visibilityGrid;
+    private MapGridComponent? _visibilityGridComp;
+    private Vector2i _visibilityEye;
+
+    /// <summary>
+    /// Whether the last computed view can see this world position. False before the first frame.
+    /// </summary>
+    public bool IsWorldPositionVisible(Vector2 worldPos) {
+        if (_tileInfo == null || _visibilityGridComp == null)
+            return false;
+
+        var tilePos = _mapSystem.WorldToTile(_visibilityGrid, _visibilityGridComp, worldPos)
+                      - _visibilityEye + _interfaceManager.View.Center + 1;
+        if (tilePos.X < 0 || tilePos.Y < 0 || tilePos.X >= _tileInfo.GetLength(0) || tilePos.Y >= _tileInfo.GetLength(1))
+            return false;
+
+        return _tileInfo[tilePos.X, tilePos.Y]?.IsVisible is true;
+    }
 
     public void DirtyTileVisibility() {
         _tileInfoDirty = true;
@@ -14,6 +32,10 @@ internal partial class DreamViewOverlay {
 
     private ViewAlgorithm.Tile?[,] CalculateTileVisibility(EntityUid gridUid, MapGridComponent grid, TileRef eyeTile, int seeVis) {
         using var _ = _prof.Group("visible turfs");
+
+        _visibilityGrid = gridUid;
+        _visibilityGridComp = grid;
+        _visibilityEye = eyeTile.GridIndices;
 
         var viewRange = _interfaceManager.View;
         if (_tileInfo == null || _tileInfo.GetLength(0) != viewRange.Width + 2 ||

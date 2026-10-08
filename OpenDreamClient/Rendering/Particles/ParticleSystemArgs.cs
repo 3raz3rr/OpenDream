@@ -82,7 +82,12 @@ public sealed class ParticleSystemArgs(Func<Texture?> icon, Vector2i particleSys
     public Func<float,Matrix3x2>? Transform;
 
     /// <summary>
-    /// A function which takes the life time of this particles and returns the an acceleration to apply to this particle
+    /// Drift sampled once per BYOND tick (0.1s). Friction is applied separately, once per particle.
     /// </summary>
     public Func<float,Vector3,Vector3>? Acceleration;
+
+    /// <summary>
+    /// Friction sampled once when a particle spawns.
+    /// </summary>
+    public Func<Vector3>? Friction;
 }

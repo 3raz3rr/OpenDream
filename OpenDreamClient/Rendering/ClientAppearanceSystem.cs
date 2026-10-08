@@ -274,7 +274,7 @@ internal sealed partial class ClientAppearanceSystem : SharedAppearanceSystem {
                     instance.SetParameter("x", dropShadow.X);
                     instance.SetParameter("y", dropShadow.Y);
                     instance.SetParameter("shadow_color", dropShadow.Color);
-                    // TODO: offset
+                    instance.SetParameter("offset", dropShadow.Offset);
                     break;
                 case DreamFilterLayer layer:
                     break;
@@ -336,7 +336,12 @@ internal sealed partial class ClientAppearanceSystem : SharedAppearanceSystem {
     }
 
     public override void RemoveAppearance(ImmutableAppearance appearance) {
-        throw new NotImplementedException();
+        // The finalizer and the server both ask for the same id to be dropped.
+        // Only remove it when this instance is still the one stored under that id.
+        if (!appearance.TryGetId(out var id))
+            return;
+        if (_appearances.TryGetValue(id.Value, out var current) && ReferenceEquals(current, appearance))
+            _appearances.Remove(id.Value);
     }
 
     public bool TryGetAppearance(ClientObjectReference reference, [NotNullWhen(true)] out ImmutableAppearance? appearance) {

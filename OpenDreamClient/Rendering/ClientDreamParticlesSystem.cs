@@ -69,15 +69,11 @@ public sealed partial class ClientDreamParticlesSystem : SharedDreamParticlesSys
                     return data.Gradient[colorIndex];
                 }
                 : _ => Color.White,
-            Acceleration = (_, velocity) => { // TODO: Acceleration needs to only update every tick
-                var drift = (data.Drift?.GenerateVector3(_random) ?? Vector3.Zero);
-                var friction = (data.Friction?.GenerateVector3(_random) ?? Vector3.Zero); // TODO: Only calculated once per particle
-
-                return drift - (velocity * friction);
-            },
+            Acceleration = (_, _) => data.Drift?.GenerateVector3(_random) ?? Vector3.Zero,
+            Friction = () => data.Friction?.GenerateVector3(_random) ?? Vector3.Zero,
             SpawnPosition = () => data.SpawnPosition?.GenerateVector3(_random) ?? Vector3.Zero,
             SpawnVelocity = () => data.SpawnVelocity?.GenerateVector3(_random) ?? Vector3.Zero,
-            Transform = _ => { // TODO: Needs to only be performed every tick
+            Transform = _ => {
                 var scale = data.Scale.GenerateVector2(_random);
                 var rotation = data.Rotation?.Generate(_random) ?? 0f;
                 var growth = data.Growth?.GenerateVector2(_random) ?? Vector2.Zero;

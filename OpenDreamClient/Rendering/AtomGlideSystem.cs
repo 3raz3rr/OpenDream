@@ -1,6 +1,7 @@
 ﻿using OpenDreamClient.Interface;
 using Robust.Client.GameObjects;
 using Robust.Client.Graphics;
+using Robust.Shared.Timing;
 using Robust.Shared.Utility;
 
 namespace OpenDreamClient.Rendering;
@@ -19,6 +20,7 @@ public sealed partial class AtomGlideSystem : EntitySystem {
     [Dependency] private TransformSystem _transformSystem = default!;
     [Dependency] private IEntityManager _entityManager = default!;
     [Dependency] private IDreamInterfaceManager _interfaceManager = default!;
+    [Dependency] private IGameTiming _gameTiming = default!;
     private EntityQuery<DMISpriteComponent> _spriteQuery;
 
     private readonly List<Glide> _currentGlides = new();
@@ -137,12 +139,16 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         _ignoreMoveEvent = false;
     }
 
-    private static float CalculateMovementSpeed(int iconSize, float glideSize) {
-        if (glideSize == 0)
-            glideSize = 4; // TODO: 0 gives us "automated control" over this value, not just setting it to 4
+    private float CalculateMovementSpeed(int iconSize, float glideSize) {
+        if (iconSize < 1)
+            iconSize = 1;
 
-        // Assume a 20 TPS server
-        // TODO: Support other TPS
-        return glideSize / iconSize * 20f;
+        // glide_size 0 is BYOND's automatic value: one eighth of the icon, which is 4px at the default 32.
+        if (glideSize == 0)
+            glideSize = Math.Max(iconSize / 8f, 1f);
+
+        var tickRate = _gameTiming.TickRate;
+        var ticksPerSecond = tickRate > 0 ? tickRate : 20;
+        return glideSize / iconSize * ticksPerSecond;
     }
 }

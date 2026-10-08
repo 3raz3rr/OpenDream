@@ -16,7 +16,6 @@ using Robust.Client.UserInterface;
 using Robust.Client.UserInterface.Controls;
 using Robust.Shared.ContentPack;
 using Robust.Shared.Network;
-using Robust.Shared.Random;
 using Robust.Shared.Serialization.Manager;
 using Robust.Shared.Timing;
 using Robust.Shared.Utility;
@@ -41,7 +40,6 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     [Dependency] private IEntitySystemManager _entitySystemManager = default!;
     [Dependency] private IInputManager _inputManager = default!;
     [Dependency] private IUserInterfaceManager _uiManager = default!;
-    [Dependency] private IRobustRandom _random = default!;
     [Dependency] private ITimerManager _timerManager = default!;
     [Dependency] private IUriOpener _uriOpener = default!;
     [Dependency] private IGameController _gameController = default!;
@@ -60,6 +58,7 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     public Dictionary<string, InterfaceMacroSet> MacroSets { get; } = new();
     private Dictionary<WindowId, ControlWindow> ClydeWindowIdToControl { get; } = new();
     public CursorHolder Cursors { get; private set; } = default!;
+    private int _browseFileId;
 
     public ViewRange View {
         get => _view;
@@ -200,11 +199,11 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
             if (referencedElement is ControlWindow window) {
                 window.CloseChildWindow();
             } else if (referencedElement is ControlBrowser browser) {
-                // TODO: What does "closing" the browser mean? Redirect to a blank page or remove the control entirely?
+                // Closing a browser blanks the page. The control stays in the skin.
                 browser.SetFileSource(null);
             }
         } else if (pBrowse.HtmlSource != null) {
-            var htmlFileName = $"browse_{pBrowse.Window}_{_random.Next()}"; // TODO: Possible collisions and explicit file names
+            var htmlFileName = $"browse_{pBrowse.Window}_{++_browseFileId}";
             ControlBrowser? outputBrowser = referencedElement as ControlBrowser;
 
             if (outputBrowser == null) {
@@ -262,10 +261,18 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     private void RxWinGet(MsgWinGet message) {
         // Run this later to ensure any pending UI measurements have occured
         _timerManager.AddTimer(new Timer(100, false, () => {
+            string value;
+            try {
+                value = WinGet(message.ControlId, message.QueryValue, forceSnowflake: true);
+            } catch (Exception e) {
+                _sawmill.Error($"winget \"{message.ControlId}\" \"{message.QueryValue}\" failed: {e.Message}");
+                value = string.Empty;
+            }
+
             MsgPromptResponse response = new() {
                 PromptId = message.PromptId,
                 Type = DreamValueType.Text,
-                Value = WinGet(message.ControlId, message.QueryValue, forceSnowflake:true)
+                Value = value
             };
 
             _netManager.ClientSendMessage(response);
@@ -738,6 +745,11 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                 parent.AddChild(childDescriptor);
             } else if (element != null) {
                 foreach (var attribute in attributes) {
+                    if (attribute.Key == "parent" && IsClearedParent(attribute.Value)) {
+                        DetachElement(element);
+                        continue;
+                    }
+
                     element.SetProperty(attribute.Key, attribute.Value, manualWinset: true);
                 }
             } else {
@@ -853,6 +865,8 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
             } else {
                 return forceJson ? $"\"{HttpUtility.JavaScriptStringEncode(queryResult)}\"" : queryResult;
             }
+        } else if (elementIds.Length == 1 && elementIds[0].EndsWith(".*", StringComparison.Ordinal)) {
+            return WinGetChildren(elementIds[0][..^2], queryValue, forceJson, forceSnowflake);
         } else if (elementIds.Length == 1) {
             return GetProperty(elementIds[0]);
         }
@@ -942,6 +956,144 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
         SetupBaseDreamBinds();
     }
 
+    private static bool IsClearedParent(string value) {
+        return value.Length == 0
+            || value.Equals("null", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("none", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void DetachElement(InterfaceElement element) {
+        if (element is not InterfaceMacro macro)
+            return;
+
+        macro.Disable();
+        foreach (var macroSet in MacroSets.Values) {
+            if (macroSet.Macros.Remove(macro.Id.Value))
+                return;
+        }
+    }
+
+    /// <summary>
+    /// winget("default.*", "command") lists every macro in that set as parent.child.property=value.
+    /// </summary>
+    private string WinGetChildren(string parentId, string queryValue, bool forceJson, bool forceSnowflake) {
+        if (!MacroSets.TryGetValue(parentId, out var macroSet)) {
+            _sawmill.Error($"Could not winget element {parentId}.* because it does not exist");
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder();
+        foreach (var (id, macro) in macroSet.Macros) {
+            if (builder.Length > 0)
+                builder.Append(';');
+
+            builder.Append(parentId);
+            builder.Append('.');
+            builder.Append(id);
+            builder.Append('.');
+            builder.Append(queryValue);
+            builder.Append('=');
+            // MacroDescriptor.command is null on skin macros that only set a name.
+            // Serializing the descriptor to answer winget throws and the server waits forever.
+            if (queryValue == "command")
+                builder.Append(macro.Command ?? string.Empty);
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// The station skin keeps a hidden 1x1 output and empty browsers where chat, say, and stat belong.
+    /// </summary>
+    private void EnsurePlayableChrome() {
+        if (DefaultOutput != null) {
+            DefaultOutput.SetProperty("is-visible", "true");
+            DefaultOutput.SetProperty("pos", "0,0");
+            DefaultOutput.SetProperty("size", "0x0");
+            DefaultOutput.SetProperty("anchor1", "0,0");
+            DefaultOutput.SetProperty("anchor2", "100,92");
+            DefaultOutput.SetProperty("background-color", "#111318");
+            DefaultOutput.SetProperty("text-color", "#e6e6e6");
+
+            var chatWindow = FindWindowContaining(DefaultOutput);
+            if (FindElementWithId("input") == null && chatWindow != null) {
+                chatWindow.AddChild(new ControlDescriptorInput {
+                    Id = new DMFPropertyString("input"),
+                    Pos = new DMFPropertyPos(0, 0),
+                    Size = new DMFPropertySize(0, 0),
+                    Anchor1 = new DMFPropertyPos(0, 92),
+                    Anchor2 = new DMFPropertyPos(70, 100),
+                    IsVisible = new DMFPropertyBool(true),
+                    Command = new DMFPropertyString("!")
+                });
+                AddCommandButton(chatWindow, "saybutton", "Say", "say ", 70, 80);
+                AddCommandButton(chatWindow, "mebutton", "Me", "me ", 80, 90);
+                AddCommandButton(chatWindow, "oocbutton", "OOC", "ooc ", 90, 100);
+            }
+
+            chatWindow?.UpdateAnchors();
+        }
+
+        if (FindElementWithId("browseroutput") is InterfaceControl browserOutput)
+            browserOutput.SetProperty("is-visible", "false");
+
+        if (DefaultInfo != null)
+            return;
+
+        var statWindow = FindElementWithId("statwindow") as ControlWindow;
+        if (statWindow == null && FindElementWithId("statbrowser") is InterfaceControl statBrowserControl)
+            statWindow = FindWindowContaining(statBrowserControl);
+
+        if (statWindow == null)
+            return;
+
+        if (FindElementWithId("statbrowser") is InterfaceControl statBrowser)
+            statBrowser.SetProperty("is-visible", "false");
+
+        statWindow.AddChild(new ControlDescriptorInfo {
+            Id = new DMFPropertyString("stat"),
+            Pos = new DMFPropertyPos(0, 0),
+            Size = new DMFPropertySize(0, 0),
+            Anchor1 = new DMFPropertyPos(0, 0),
+            Anchor2 = new DMFPropertyPos(100, 100),
+            IsVisible = new DMFPropertyBool(true),
+            IsDefault = new DMFPropertyBool(true)
+        });
+
+        if (FindElementWithId("stat") is ControlInfo info) {
+            info.SetProperty("background-color", "#111318");
+            info.SetProperty("text-color", "#e6e6e6");
+            info.SetProperty("tab-text-color", "#e6e6e6");
+            info.SetProperty("tab-background-color", "#1c2030");
+            info.SetProperty("highlight-color", "#8ab4ff");
+            DefaultInfo = info;
+        }
+
+        statWindow.UpdateAnchors();
+    }
+
+    private static void AddCommandButton(ControlWindow window, string id, string text, string prefix, int left, int right) {
+        window.AddChild(new ControlDescriptorButton {
+            Id = new DMFPropertyString(id),
+            Pos = new DMFPropertyPos(0, 0),
+            Size = new DMFPropertySize(0, 0),
+            Anchor1 = new DMFPropertyPos(left, 92),
+            Anchor2 = new DMFPropertyPos(right, 100),
+            IsVisible = new DMFPropertyBool(true),
+            Text = new DMFPropertyString(text),
+            Command = new DMFPropertyString($".winset input.text=\"{prefix}\";input.focus=true")
+        });
+    }
+
+    private ControlWindow? FindWindowContaining(InterfaceControl control) {
+        foreach (var window in Windows.Values) {
+            if (window.ChildControls.Contains(control))
+                return window;
+        }
+
+        return null;
+    }
+
     private void LoadInterface(InterfaceDescriptor descriptor) {
         InterfaceDescriptor = descriptor;
 
@@ -970,6 +1122,8 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                 }
             }
         }
+
+        EnsurePlayableChrome();
 
         if (DefaultWindow == null)
             throw new Exception("Given DMF did not have a default window");

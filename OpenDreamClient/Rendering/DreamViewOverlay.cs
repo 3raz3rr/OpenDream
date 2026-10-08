@@ -36,6 +36,13 @@ internal sealed partial class DreamViewOverlay : Overlay {
     public readonly Dictionary<Color, RendererMetaData> MouseMapLookup = new();
     public readonly Dictionary<string, IRenderTexture> RenderSourceLookup = new();
     public readonly HashSet<EntityUid> EntitiesInView = new();
+    public readonly List<VisibleTurf> VisibleTurfs = new();
+
+    public readonly struct VisibleTurf(ClientObjectReference reference, ImmutableAppearance appearance, Vector2 worldPosition) {
+        public readonly ClientObjectReference Reference = reference;
+        public readonly ImmutableAppearance Appearance = appearance;
+        public readonly Vector2 WorldPosition = worldPosition;
+    }
 
     private const LookupFlags MapLookupFlags = LookupFlags.Approximate | LookupFlags.Uncontained;
 
@@ -508,9 +515,7 @@ internal sealed partial class DreamViewOverlay : Overlay {
 
         //KEEP_TOGETHER groups
         if (iconMetaData.KeepTogetherGroup?.Count > 0) {
-            // TODO: Calculate an appropriate size based on overlays/underlays, offsets and transforms.
-            // For now, just generate a buffer of 128 pixels around the main icon...
-            Vector2i ktSize = (256, 256) + iconMetaData.MainIcon?.DMI?.IconSize ?? (0,0);
+            Vector2i ktSize = KeepTogetherCanvasSize(iconMetaData);
             iconMetaData.TextureOverride = ProcessKeepTogether(handle, iconMetaData, ktSize);
             iconMetaData.RenderPosOffset -= ((ktSize/IconSize) - Vector2.One) * new Vector2(0.5f); //correct for KT group texture offset
         }
@@ -519,9 +524,9 @@ internal sealed partial class DreamViewOverlay : Overlay {
         if (!string.IsNullOrWhiteSpace(iconMetaData.Maptext)) {
             var maptextSize = iconMetaData.MaptextSize!.Value;
             if (maptextSize.X == 0)
-                maptextSize.X = 32;
+                maptextSize.X = IconSize;
             if (maptextSize.Y == 0)
-                maptextSize.Y = 32;
+                maptextSize.Y = IconSize;
 
             var renderTarget = _renderTargetPool.Rent(maptextSize);
 
@@ -687,6 +692,7 @@ internal sealed partial class DreamViewOverlay : Overlay {
 
     private void CollectVisibleSprites(ViewAlgorithm.Tile?[,] tiles, EntityUid gridUid, MapGridComponent grid, TileRef eyeTile, sbyte seeVis, SightFlags sight, Box2 worldAABB) {
         _spriteContainer.Clear();
+        VisibleTurfs.Clear();
 
         // This exists purely because the tiebreaker var needs to exist somewhere
         // It's set to 0 again before every unique call to ProcessIconComponents
@@ -707,7 +713,15 @@ internal sealed partial class DreamViewOverlay : Overlay {
             tValue = 0;
             //pass the turf coords for client.images lookup
             Vector3 turfCoords = new Vector3(tileRef.X, tileRef.Y, (int) worldPos.MapId);
-            ProcessIconComponents(_appearanceSystem.GetTurfIcon((uint)tileRef.Tile.TypeId), worldPos.Position - Vector2.One, EntityUid.Invalid, false, false, ref tValue, _spriteContainer, seeVis, turfCoords: turfCoords, flick: flick);
+            var turfIcon = _appearanceSystem.GetTurfIcon((uint)tileRef.Tile.TypeId);
+            if (turfIcon.Appearance != null) {
+                VisibleTurfs.Add(new VisibleTurf(
+                    new ClientObjectReference(tilePos, (int)worldPos.MapId),
+                    turfIcon.Appearance,
+                    worldPos.Position));
+            }
+
+            ProcessIconComponents(turfIcon, worldPos.Position - Vector2.One, EntityUid.Invalid, false, false, ref tValue, _spriteContainer, seeVis, turfCoords: turfCoords, flick: flick);
         }
 
         // Visible entities
@@ -723,9 +737,12 @@ internal sealed partial class DreamViewOverlay : Overlay {
 
                 var worldPos = _transformSystem.GetWorldPosition(transform);
 
-                // Check for visibility if the eye doesn't have SEE_OBJS or SEE_MOBS
-                // TODO: Differentiate between objs and mobs
-                if ((sight & (SightFlags.SeeObjs|SightFlags.SeeMobs)) == 0 && _tileInfo != null) {
+                // SEE_MOBS and SEE_OBJS are separate. A mob is anything that carries mob sight.
+                var isMob = _entityManager.HasComponent<DreamMobSightComponent>(entity);
+                var seenThroughDarkness = isMob
+                    ? (sight & SightFlags.SeeMobs) != 0
+                    : (sight & SightFlags.SeeObjs) != 0;
+                if (!seenThroughDarkness && _tileInfo != null) {
                     var tilePos = _mapSystem.WorldToTile(gridUid, grid, worldPos) - eyeTile.GridIndices + _interfaceManager.View.Center + 1;
                     if (tilePos.X < 0 || tilePos.Y < 0 || tilePos.X >= _tileInfo.GetLength(0) || tilePos.Y >= _tileInfo.GetLength(1))
                         continue;
@@ -782,6 +799,28 @@ internal sealed partial class DreamViewOverlay : Overlay {
 
         _rendererMetaDataToReturn.Push(result);
         return result;
+    }
+
+    /// <summary>
+    /// Canvas large enough for the main icon plus overlay offsets and transform translation, centered on the icon.
+    /// </summary>
+    private Vector2i KeepTogetherCanvasSize(RendererMetaData iconMetaData) {
+        var main = iconMetaData.MainIcon?.DMI?.IconSize ?? new Vector2i(IconSize, IconSize);
+        var reachX = main.X;
+        var reachY = main.Y;
+
+        if (iconMetaData.KeepTogetherGroup != null) {
+            foreach (var item in iconMetaData.KeepTogetherGroup) {
+                var itemSize = item.MainIcon?.DMI?.IconSize ?? main;
+                var delta = (item.Position - iconMetaData.Position) * IconSize;
+                var translation = item.TransformToApply.Translation;
+                reachX = Math.Max(reachX, (int)MathF.Ceiling(MathF.Abs(delta.X) + itemSize.X + MathF.Abs(translation.X)));
+                reachY = Math.Max(reachY, (int)MathF.Ceiling(MathF.Abs(delta.Y) + itemSize.Y + MathF.Abs(translation.Y)));
+            }
+        }
+
+        var side = Math.Max(Math.Max(reachX, reachY), Math.Max(main.X, main.Y));
+        return new Vector2i(side * 2, side * 2);
     }
 
     /// <summary>

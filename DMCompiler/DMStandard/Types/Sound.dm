@@ -10,13 +10,13 @@
 	var/pitch = 0 as opendream_unimplemented
 	var/pan = 0 as opendream_unimplemented
 	var/params = null as opendream_unimplemented
-	var/falloff = 1 as opendream_unimplemented
+	var/falloff = 1
 	
 	var/atom/atom as opendream_unimplemented
 	var/transform as opendream_unimplemented
-	var/x as opendream_unimplemented
-	var/y as opendream_unimplemented
-	var/z as opendream_unimplemented
+	var/x = 0
+	var/y = 0
+	var/z = 0
 
 	var/environment as opendream_unimplemented
 	var/echo as opendream_unimplemented

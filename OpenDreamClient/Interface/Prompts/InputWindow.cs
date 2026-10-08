@@ -33,6 +33,6 @@ internal class InputWindow : PromptWindow {
     }
 
     protected virtual void OkButtonClicked() {
-        throw new NotImplementedException();
+        FinishPrompt(DreamValueType.Null, null);
     }
 }

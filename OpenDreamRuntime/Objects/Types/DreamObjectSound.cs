@@ -5,6 +5,9 @@ public sealed class DreamObjectSound : DreamObject {
     public float Offset;
     public byte Repeat { get; set => field = Math.Clamp(value, (byte)0, (byte)2); }
     public DreamValue File;
+    public bool PositionSet;
+    public int PosX, PosY, PosZ;
+    public float Falloff = 1;
 
     public DreamObjectSound(DreamObjectDefinition objectDefinition) : base(objectDefinition) {
         if (objectDefinition.TryGetVariable("channel", out var channel)) {
@@ -26,6 +29,24 @@ public sealed class DreamObjectSound : DreamObject {
         }
 
         objectDefinition.TryGetVariable("file", out File);
+
+        if (objectDefinition.TryGetVariable("x", out var posX) && posX.TryGetValueAsInteger(out var xValue) && xValue != 0) {
+            PosX = xValue;
+            PositionSet = true;
+        }
+
+        if (objectDefinition.TryGetVariable("y", out var posY) && posY.TryGetValueAsInteger(out var yValue) && yValue != 0) {
+            PosY = yValue;
+            PositionSet = true;
+        }
+
+        if (objectDefinition.TryGetVariable("z", out var posZ) && posZ.TryGetValueAsInteger(out var zValue) && zValue != 0) {
+            PosZ = zValue;
+            PositionSet = true;
+        }
+
+        if (objectDefinition.TryGetVariable("falloff", out var falloff) && falloff.TryGetValueAsFloat(out var falloffValue))
+            Falloff = falloffValue;
     }
 
     protected override bool TryGetVar(string varName, out DreamValue value) {
@@ -35,6 +56,10 @@ public sealed class DreamObjectSound : DreamObject {
             case "offset": value = new(Offset); return true;
             case "repeat": value = new(Repeat); return true;
             case "file": File.IncRef(); value = File; return true;
+            case "x": value = new(PosX); return true;
+            case "y": value = new(PosY); return true;
+            case "z": value = new(PosZ); return true;
+            case "falloff": value = new(Falloff); return true;
             default: return base.TryGetVar(varName, out value);
         }
     }
@@ -49,6 +74,21 @@ public sealed class DreamObjectSound : DreamObject {
                 value.IncRef();
                 File.DecRef();
                 File = value;
+                break;
+            case "x":
+                PosX = value.MustGetValueAsInteger();
+                PositionSet = true;
+                break;
+            case "y":
+                PosY = value.MustGetValueAsInteger();
+                PositionSet = true;
+                break;
+            case "z":
+                PosZ = value.MustGetValueAsInteger();
+                PositionSet = true;
+                break;
+            case "falloff":
+                Falloff = value.UnsafeGetValueAsFloat();
                 break;
             default: base.SetVar(varName, value); break;
         }

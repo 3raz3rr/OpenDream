@@ -70,6 +70,9 @@ internal sealed partial class ContextMenuPopup : Popup {
                 continue;
 
             var reference = new ClientObjectReference(_entityManager.GetNetEntity(uid));
+            if (!HasExecutableVerb(reference))
+                continue;
+
             var name = _appearanceSystem.GetNameUnformatted(reference);
             ContextMenu.AddChild(new ContextMenuItem(this, reference, name, sprite.Icon));
         }
@@ -82,8 +85,10 @@ internal sealed partial class ContextMenuPopup : Popup {
             if (_spriteQuery.TryGetComponent(uid, out var sprite) &&
                 sprite.Icon.Appearance?.MouseOpacity != MouseOpacity.Transparent) {
                 var reference = new ClientObjectReference(_entityManager.GetNetEntity(uid));
-                var name = _appearanceSystem.GetNameUnformatted(reference);
-                ContextMenu.AddChild(new ContextMenuItem(this, reference, name, sprite.Icon));
+                if (HasExecutableVerb(reference)) {
+                    var name = _appearanceSystem.GetNameUnformatted(reference);
+                    ContextMenu.AddChild(new ContextMenuItem(this, reference, name, sprite.Icon));
+                }
             }
         }
 
@@ -93,14 +98,16 @@ internal sealed partial class ContextMenuPopup : Popup {
             var name = _appearanceSystem.GetNameUnformatted(turfUnderMouse.Value);
             var icon = _appearanceSystem.GetTurfIcon(turfId.Value);
 
-            ContextMenu.AddChild(new ContextMenuItem(this, turfUnderMouse.Value, name, icon));
+            if (HasExecutableVerb(turfUnderMouse.Value))
+                ContextMenu.AddChild(new ContextMenuItem(this, turfUnderMouse.Value, name, icon));
         }
+    }
 
-        //TODO filter entities by the valid verbs that exist on them
-        //they should only show up if there is a verb attached to usr which matches the filter in world syntax
-        //ie, obj|turf in world
-        //note that popup_menu = 0 overrides this behaviour, as does verb invisibility (urgh), and also hidden
-        //because BYOND sure loves redundancy
+    private bool HasExecutableVerb(ClientObjectReference reference) {
+        foreach (var _ in _verbSystem.GetExecutableVerbs(reference))
+            return true;
+
+        return false;
     }
 
     // Determines if the given point falls inside the transformed bounding box of the given sprite's icon and its entity transform
