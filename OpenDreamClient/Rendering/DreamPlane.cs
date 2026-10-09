@@ -55,6 +55,7 @@ internal sealed class DreamPlane(IRenderTexture mainRenderTarget) : IDisposable 
 
                 if (sprite.HasRenderSource && overlay.RenderSourceLookup.TryGetValue(sprite.RenderSource!, out var renderSourceTexture)) {
                     sprite.TextureOverride = renderSourceTexture.Texture;
+                    sprite.PremultipliedTexture = true;
                 }
 
                 overlay.DrawIcon(handle, mainRenderTarget.Size, sprite, positionOffset);

@@ -147,7 +147,9 @@ public sealed partial class ScalingViewport : Control, IViewportControl {
 
     // Draw box in pixel coords to draw the viewport at.
     public UIBox2i GetDrawBox() {
-        DebugTools.AssertNotNull(_viewport);
+        // Mouse events can arrive in the same frame a resize disposed the viewport.
+        if (_viewport == null)
+            EnsureViewportCreated();
 
         var vpSize = _viewport!.Size;
         var ourSize = (Vector2)PixelSize;

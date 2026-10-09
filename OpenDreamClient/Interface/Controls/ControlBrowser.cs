@@ -12,7 +12,6 @@ using Robust.Client.WebView;
 using Robust.Shared.Console;
 using Robust.Shared.ContentPack;
 using Robust.Shared.Network;
-using Robust.Shared.Timing;
 using Robust.Shared.Utility;
 
 namespace OpenDreamClient.Interface.Controls;
@@ -40,8 +39,8 @@ internal sealed partial class ControlBrowser : InterfaceControl {
 
     private PanelContainer _panel = default!;
     private WebViewControl? _webView;
-    private readonly Queue<string> _urlQueue = new();
-    private bool _urlPump;
+    private string? _pendingUrl;
+    private readonly List<string> _pendingScripts = new();
 
     public ControlBrowser(ControlDescriptor controlDescriptor, ControlWindow window)
         : base(controlDescriptor, window) {
@@ -66,10 +65,8 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             return _webView;
 
         var webView = new WebViewControl {
-            AlwaysActive = true,
             HorizontalExpand = true,
-            VerticalExpand = true,
-            MinSize = new Vector2(Math.Max(ControlDescriptor.Size.X, 64), Math.Max(ControlDescriptor.Size.Y, 64))
+            VerticalExpand = true
         };
         webView.AddResourceRequestHandler(RequestHandler);
         webView.AddBeforeBrowseHandler(BeforeBrowseHandler);
@@ -81,11 +78,32 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     protected override void UpdateElementDescriptor() {
         base.UpdateElementDescriptor();
 
-        _panel.PanelOverride = new StyleBoxFlat(Color.White); // Always white background
+        // A forced white panel is what showed up as the blank chat. Use the skin color, or stay clear.
+        _panel.PanelOverride = ControlDescriptor.BackgroundColor.Value != Color.Transparent
+            ? new StyleBoxFlat(ControlDescriptor.BackgroundColor.Value)
+            : null;
+
+        if (ControlDescriptor.IsVisible.Value)
+            ActivatePending();
+    }
+
+    public override void SetProperty(string property, string value, bool manualWinset = false) {
+        switch (property) {
+            case "focus":
+                if (value is "true" or "1") {
+                    ActivatePending();
+                    _webView?.GrabKeyboardFocus();
+                }
+
+                return;
+        }
+
+        base.SetProperty(property, value, manualWinset);
     }
 
     public override void Output(string value, string? jsFunction) {
-        if (jsFunction == null) return;
+        if (jsFunction == null)
+            return;
 
         // Prepare the argument to be used in JS
         //output is formatted by list2params sometimes, which means raw strings are url encoded, but the message contains & chars which are not encoded that are the params
@@ -95,35 +113,82 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             parts[i] = "\""+HttpUtility.JavaScriptStringEncode(HttpUtility.UrlDecode(parts[i]))+"\""; //wrap in quotes and encode for JS
         }
 
-        // Insert the values directly into JS and execute it (what could go wrong??)
-        EnsureWebView().ExecuteJavaScript($"{jsFunction}({string.Join(",", parts)})");
+        var script = $"{jsFunction}({string.Join(",", parts)})";
+        // Hidden browsers, and browsers inside a hidden popup, must not start CEF just to run a script.
+        if (!HostIsReady()) {
+            _pendingScripts.Add(script);
+            return;
+        }
+
+        RunScript(script);
+    }
+
+    /// <summary>
+    /// The window that owns this browser just became visible. Load the page and deliver queued output().
+    /// </summary>
+    public void ActivatePending() {
+        if (!HostIsReady())
+            return;
+
+        if (_pendingUrl != null)
+            Navigate(_pendingUrl);
+
+        if (_pendingScripts.Count == 0)
+            return;
+
+        var queued = _pendingScripts.ToArray();
+        _pendingScripts.Clear();
+        foreach (var script in queued)
+            RunScript(script);
+    }
+
+    private void RunScript(string script) {
+        try {
+            EnsureWebView().ExecuteJavaScript(script);
+        } catch (Exception e) {
+            _pendingScripts.Add(script);
+            _sawmill.Warning($"Browser script deferred ({Id.Value}): {e.Message}");
+        }
     }
 
     public void SetFileSource(ResPath? filepath) {
         if (filepath == null) {
-            _urlQueue.Clear();
+            _pendingUrl = null;
             if (_webView != null)
                 _webView.Url = "about:blank";
             return;
         }
 
         // hostname must be the localhost IP for TGUI to work properly.
-        // Asset cache browses this control many times in one tick; CEF drops frames if they all start at once.
-        _urlQueue.Enqueue("http://127.0.0.1/" + filepath);
-        PumpUrls();
-    }
-
-    private void PumpUrls() {
-        if (_urlPump || _urlQueue.Count == 0)
+        // Hidden controls (the asset cache especially) get a browse() per file. Starting CEF
+        // for each one stalls the client; the bytes are already on disk from browse_rsc.
+        _pendingUrl = "http://127.0.0.1/" + filepath;
+        if (!HostIsReady())
             return;
 
-        var url = _urlQueue.Dequeue();
-        _urlPump = true;
-        EnsureWebView().Url = url;
-        Timer.Spawn(TimeSpan.FromMilliseconds(150), () => {
-            _urlPump = false;
-            PumpUrls();
-        });
+        Navigate(_pendingUrl);
+    }
+
+    /// <summary>
+    /// A browser control can be marked visible while its popup window is still closed.
+    /// Starting CEF then times out, because there is no OS window yet.
+    /// </summary>
+    private bool HostIsReady() {
+        if (!ControlDescriptor.IsVisible.Value)
+            return false;
+
+        if (Window != null && !Window.WindowDescriptor.IsPane.Value && !Window.WindowDescriptor.IsVisible.Value)
+            return false;
+
+        return true;
+    }
+
+    private void Navigate(string url) {
+        var webView = EnsureWebView();
+        if (webView.Url == url)
+            return;
+
+        webView.Url = url;
     }
 
     private void BeforeBrowseHandler(IBeforeBrowseContext context) {
@@ -132,28 +197,53 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             if (_webView == null || string.IsNullOrEmpty(_webView.Url))
                 return;
 
+            // TGUI topics are byond://?tgui=1&... which is not a valid URI (no host).
+            if (context.Url.StartsWith("byond://", StringComparison.OrdinalIgnoreCase)) {
+                context.DoCancel();
+                DispatchByondUrl(context.Url);
+                return;
+            }
+
             Uri oldUri = new Uri(_webView.Url);
             Uri newUri = new Uri(context.Url);
 
-            if (newUri.Scheme == "byond" || (newUri.AbsolutePath == oldUri.AbsolutePath && newUri.Query != string.Empty)) {
+            if (newUri.AbsolutePath == oldUri.AbsolutePath && newUri.Query != string.Empty) {
                 context.DoCancel();
-
-                switch (newUri.Host) {
-                    case "winset":
-                        HandleEmbeddedWinset(newUri.Query);
-                        return;
-                    case "winget":
-                        HandleEmbeddedWinget(newUri.Query);
-                        return;
-                    default: {
-                        var msg = new MsgTopic { Query = newUri.Query };
-                        _netManager.ClientSendMessage(msg);
-                        break;
-                    }
-                }
+                DispatchByondUrl("byond://" + newUri.Query);
             }
         } catch (Exception e) {
             _sawmill.Error($"Exception in BeforeBrowseHandler: {e}");
+        }
+    }
+
+    private void DispatchByondUrl(string url) {
+        var rest = url["byond://".Length..];
+        string host;
+        string query;
+        if (rest.StartsWith('?') || rest.Length == 0) {
+            host = string.Empty;
+            query = rest;
+        } else {
+            var split = rest.IndexOf('?');
+            if (split < 0) {
+                host = rest;
+                query = string.Empty;
+            } else {
+                host = rest[..split];
+                query = rest[split..];
+            }
+        }
+
+        switch (host) {
+            case "winset":
+                HandleEmbeddedWinset(query);
+                return;
+            case "winget":
+                HandleEmbeddedWinget(query);
+                return;
+            default:
+                _netManager.ClientSendMessage(new MsgTopic { Query = query });
+                return;
         }
     }
 

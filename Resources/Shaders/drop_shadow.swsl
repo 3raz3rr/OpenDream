@@ -31,8 +31,7 @@ void fragment() {
     
     highp vec4 final_shadow_color = vec4(shadow_color.rgb, shadow_color.a * sampled_shadow_alpha);
     
-    // Mix the shadow with the initial image based on the image's alpha
-    COLOR.rgb = final_shadow_color.rgb * (1.0 - texture_color.a) + (texture_color.rgb / texture_color.a); //texture color needs to be divided by alpha to account for alpha premultiplication in the overlay shader
+    // Source icons are straight alpha. Dividing by alpha blew transparent pixels out to black.
+    COLOR.rgb = final_shadow_color.rgb * (1.0 - texture_color.a) + texture_color.rgb;
     COLOR.a = clamp(final_shadow_color.a + texture_color.a, 0.0, 1.0);
-    COLOR.rgb *= COLOR.a;
 }

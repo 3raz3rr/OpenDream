@@ -29,6 +29,12 @@ internal sealed partial class DreamViewOverlay : Overlay {
     public bool ScreenOverlayEnabled = true;
     public bool MouseMapRenderEnabled;
 
+    /// <summary>
+    /// The mouse map is a second full draw of the view, only needed to see what is under the cursor.
+    /// Input sets this; the overlay draws it on the next frame instead of every frame.
+    /// </summary>
+    public bool MouseMapRequested = true;
+
     public int IconSize => _interfaceManager.IconSize;
     public Texture? MouseMap => _mouseMapRenderTarget?.Texture;
     public readonly Dictionary<int, DreamPlane> Planes = new();
@@ -95,8 +101,11 @@ internal sealed partial class DreamViewOverlay : Overlay {
             BlendAdd = "blend_add",
             BlendSubtract = "blend_subtract",
             BlendMultiply = "blend_multiply",
-            BlendInsetOverlay = "blend_inset_overlay";
+            BlendInsetOverlay = "blend_inset_overlay",
+            PremulBlit = "premul_blit";
     }
+
+    private ShaderInstance _premulBlit = default!;
 
     public DreamViewOverlay(RenderTargetPool renderTargetPool) {
         IoCManager.InjectDependencies(this);
@@ -116,6 +125,7 @@ internal sealed partial class DreamViewOverlay : Overlay {
         _sawmill.Debug("Loading shaders...");
         BlockColorInstance = _protoManager.Index<ShaderPrototype>(OdShaderId.BlockColor).InstanceUnique();
         ColorInstance = _protoManager.Index<ShaderPrototype>(OdShaderId.Color).InstanceUnique();
+        _premulBlit = _protoManager.Index<ShaderPrototype>(OdShaderId.PremulBlit).InstanceUnique();
         _blendModeInstances = new(6) {
             {BlendMode.Default, _protoManager.Index<ShaderPrototype>(OdShaderId.BlendOverlay).InstanceUnique()}, //BLEND_DEFAULT (Same as BLEND_OVERLAY when there's no parent)
             {BlendMode.Overlay, _protoManager.Index<ShaderPrototype>(OdShaderId.BlendOverlay).InstanceUnique()}, //BLEND_OVERLAY
@@ -163,6 +173,28 @@ internal sealed partial class DreamViewOverlay : Overlay {
             _rendererMetaDataRental.Push(_rendererMetaDataToReturn.Pop());
     }
 
+    /// <summary>
+    /// Shift the view so its origin lands on a screen pixel, matching the grid renderer.
+    /// Without this, the atom texture slides against tile-aligned art while the camera moves.
+    /// </summary>
+    private static Box2 PixelSnapWorldBox(OverlayDrawArgs args) {
+        var box = args.WorldAABB;
+        var eye = args.Viewport.Eye;
+        if (eye == null)
+            return box;
+
+        var viewScale = eye.Scale * args.Viewport.RenderScale * new Vector2(EyeManager.PixelsPerMeter, -EyeManager.PixelsPerMeter);
+        var snap = PixelSnapOffset(box.BottomLeft, eye.Position.Position + eye.Offset, eye.Rotation, viewScale, args.Viewport.Size);
+        return box.Translated(snap);
+    }
+
+    private static Vector2 PixelSnapOffset(Vector2 worldPosition, Vector2 viewPosition, Angle viewRotation, Vector2 viewScale, Vector2 viewportSize) {
+        var viewPositionRelative = viewRotation.RotateVec(worldPosition - viewPosition);
+        var screenPosition = viewPositionRelative * viewScale + viewportSize / 2f;
+        var screenOffset = screenPosition.Rounded() - screenPosition;
+        return (-viewRotation).RotateVec(screenOffset / viewScale);
+    }
+
     private void DrawAll(OverlayDrawArgs args, EntityUid eye, Vector2i viewportSize) {
         if (!_xformQuery.TryGetComponent(eye, out var eyeTransform))
             return;
@@ -176,7 +208,7 @@ internal sealed partial class DreamViewOverlay : Overlay {
         var sight = mobSight?.Sight ?? 0;
 
         var worldHandle = args.WorldHandle;
-        var worldAABB = args.WorldAABB;
+        var worldAABB = PixelSnapWorldBox(args);
 
         using (_prof.Group("lookup")) {
             //TODO use a sprite tree.
@@ -196,10 +228,12 @@ internal sealed partial class DreamViewOverlay : Overlay {
         //Final draw
         DrawPlanes(worldHandle, worldAABB);
 
-        //At this point all the sprites have been rendered to the base target, now we just draw it to the viewport!
+        // The base target was blended over transparency, so its RGB is already premultiplied.
+        worldHandle.UseShader(_premulBlit);
         worldHandle.DrawTexture(
             MouseMapRenderEnabled ? _mouseMapRenderTarget!.Texture : _baseRenderTarget!.Texture,
-            args.WorldAABB.BottomLeft);
+            worldAABB.BottomLeft);
+        worldHandle.UseShader(null);
     }
 
     //handles underlays, overlays, appearance flags, images. Adds them to the result list, so they can be sorted and drawn with DrawIcon()
@@ -218,6 +252,11 @@ internal sealed partial class DreamViewOverlay : Overlay {
         ClientAppearanceSystem.Flick? flick = null
     ) {
         if (icon.Appearance is null) //in the event that appearance hasn't loaded yet
+            return;
+        if (icon.Appearance.Invisibility > seeVis)
+            return;
+        // Map-editor area icons live on AREA_PLANE at INVISIBILITY_LIGHTING. BYOND never draws them.
+        if (icon.Appearance.Plane == 2 && icon.Appearance.Invisibility > 0)
             return;
         if ((isVisChild || (parentIcon?.IsVisContent ?? false)) && (icon.Appearance.VisFlags & VisFlags.Hide) != 0)
             return;
@@ -497,14 +536,16 @@ internal sealed partial class DreamViewOverlay : Overlay {
             colorMatrix = iconMetaData.ColorMatrixToApply;
 
         var blendAndColor = _blendModeInstances[blendMode];
-        if (!iconMetaData.IsPlaneMaster && colorMatrix.Equals(ColorMatrix.Identity)) // We can get away with no duplication
+        // Plane masters and render-source relays already store premultiplied RGB.
+        var alreadyPremultiplied = iconMetaData.IsPlaneMaster || iconMetaData.PremultipliedTexture;
+        if (!alreadyPremultiplied && colorMatrix.Equals(ColorMatrix.Identity)) // We can get away with no duplication
             return blendAndColor;
 
         // RT's batching is a little broken and so we must duplicate the shader if we modify its parameters
         blendAndColor = blendAndColor.Duplicate();
         blendAndColor.SetParameter("colorMatrix", colorMatrix.GetMatrix4());
         blendAndColor.SetParameter("offsetVector", colorMatrix.GetOffsetVector());
-        blendAndColor.SetParameter("isPlaneMaster", iconMetaData.IsPlaneMaster);
+        blendAndColor.SetParameter("isPlaneMaster", alreadyPremultiplied);
         return blendAndColor;
     }
 
@@ -517,6 +558,7 @@ internal sealed partial class DreamViewOverlay : Overlay {
         if (iconMetaData.KeepTogetherGroup?.Count > 0) {
             Vector2i ktSize = KeepTogetherCanvasSize(iconMetaData);
             iconMetaData.TextureOverride = ProcessKeepTogether(handle, iconMetaData, ktSize);
+            iconMetaData.PremultipliedTexture = true;
             iconMetaData.RenderPosOffset -= ((ktSize/IconSize) - Vector2.One) * new Vector2(0.5f); //correct for KT group texture offset
         }
 
@@ -537,6 +579,9 @@ internal sealed partial class DreamViewOverlay : Overlay {
 
         var frame = iconMetaData.GetTexture(this, handle);
         var pixelPosition = (iconMetaData.Position + (positionOffset + iconMetaData.RenderPosOffset)) * IconSize;
+        // Lock icons to whole pixels. Fractional camera positions otherwise crawl
+        // differently for tile-aligned turfs and everything else.
+        pixelPosition = new Vector2(MathF.Round(pixelPosition.X), MathF.Round(pixelPosition.Y));
 
         //if frame is null, this doesn't require a draw, so return NOP
         if (frame == null)
@@ -574,9 +619,6 @@ internal sealed partial class DreamViewOverlay : Overlay {
             foreach (var (planeId, plane) in Planes) {
                 plane.SetMainRenderTarget(_clyde.CreateRenderTarget(size, new(RenderTargetColorFormat.Rgba8Srgb), name: $"Plane {planeId}"));
             }
-        } else {
-            // Clear the mouse map lookup dictionary
-            MouseMapLookup.Clear();
         }
     }
 
@@ -657,13 +699,38 @@ internal sealed partial class DreamViewOverlay : Overlay {
         }, new Color());
     }
 
+    private readonly List<int> _planeOrder = new();
+
+    private void FillPlaneOrder() {
+        _planeOrder.Clear();
+        foreach (var planeIndex in Planes.Keys)
+            _planeOrder.Add(planeIndex);
+        _planeOrder.Sort();
+    }
+
     private void DrawPlanes(DrawingHandleWorld handle, Box2 worldAABB) {
+        FillPlaneOrder();
+        var drawMouseMap = MouseMapRenderEnabled || MouseMapRequested;
+        MouseMapRequested = false;
+
         using (var _ = _prof.Group("draw planes map")) {
             handle.RenderInRenderTarget(_baseRenderTarget!, () => {
-                foreach (int planeIndex in Planes.Keys.Order()) {
+                // First pass fills every plane from this frame's sprites.
+                foreach (int planeIndex in _planeOrder)
+                    Planes[planeIndex].Draw(this, handle, worldAABB);
+
+                // Game objects are relayed onto a plane that sorts below their destination,
+                // so the first pass samples last frame's texture and they slide ahead of the floor.
+                foreach (int planeIndex in _planeOrder) {
                     var plane = Planes[planeIndex];
+                    if (!PlaneSamplesRenderSource(plane))
+                        continue;
 
                     plane.Draw(this, handle, worldAABB);
+                }
+
+                foreach (int planeIndex in _planeOrder) {
+                    var plane = Planes[planeIndex];
 
                     if (plane.Master != null) {
                         // Don't draw this to the base render target if it has a RenderTarget starting with '*'
@@ -671,23 +738,40 @@ internal sealed partial class DreamViewOverlay : Overlay {
                             continue;
 
                         plane.Master.TextureOverride = plane.RenderTarget.Texture;
+                        plane.Master.PremultipliedTexture = true;
                         DrawIcon(handle, _baseRenderTarget!.Size, plane.Master, Vector2.Zero);
                     } else {
-                        handle.UseShader(null);
-                        handle.SetTransform(CreateRenderTargetFlipMatrix(_baseRenderTarget!.Size, Vector2.Zero));
-                        handle.DrawTextureRect(plane.RenderTarget.Texture, Box2.FromTwoPoints(Vector2.Zero, _baseRenderTarget.Size));
+                        BlitPremultiplied(handle, plane.RenderTarget.Texture, _baseRenderTarget!.Size);
                     }
                 }
             }, new Color());
         }
 
-        // TODO: Can this only be done once the user clicks?
+        if (!drawMouseMap)
+            return;
+
+        MouseMapLookup.Clear();
         using (_prof.Group("draw planes mouse map")) {
             handle.RenderInRenderTarget(_mouseMapRenderTarget!, () => {
-                foreach (int planeIndex in Planes.Keys.Order())
+                foreach (int planeIndex in _planeOrder)
                     Planes[planeIndex].DrawMouseMap(handle, this, _mouseMapRenderTarget!.Size, worldAABB);
             }, new Color());
         }
+    }
+
+    private static bool PlaneSamplesRenderSource(DreamPlane plane) {
+        foreach (var sprite in plane.Sprites) {
+            if (sprite.HasRenderSource)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void BlitPremultiplied(DrawingHandleWorld handle, Texture texture, Vector2i renderTargetSize) {
+        handle.UseShader(_premulBlit);
+        handle.SetTransform(CreateRenderTargetFlipMatrix(renderTargetSize, Vector2.Zero));
+        handle.DrawTextureRect(texture, Box2.FromTwoPoints(Vector2.Zero, renderTargetSize));
     }
 
     private void CollectVisibleSprites(ViewAlgorithm.Tile?[,] tiles, EntityUid gridUid, MapGridComponent grid, TileRef eyeTile, sbyte seeVis, SightFlags sight, Box2 worldAABB) {
@@ -858,9 +942,7 @@ internal sealed partial class DreamViewOverlay : Overlay {
         //but keep the handle to the final KT group's render target so we don't override it later in the render cycle
         IRenderTexture ktTexture = _renderTargetPool.Rent(tempTexture.Size);
         handle.RenderInRenderTarget(ktTexture, () => {
-            handle.UseShader(null);
-            handle.SetTransform(CreateRenderTargetFlipMatrix(tempTexture.Size, Vector2.Zero));
-            handle.DrawTextureRect(tempTexture.Texture, new Box2(Vector2.Zero, tempTexture.Size));
+            BlitPremultiplied(handle, tempTexture.Texture, tempTexture.Size);
         }, Color.Transparent);
 
         _renderTargetPool.ReturnAtEndOfFrame(tempTexture);

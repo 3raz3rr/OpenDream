@@ -27,6 +27,10 @@ internal sealed class RendererMetaData : IComparable<RendererMetaData> {
     public BlendMode BlendMode;
     public MouseOpacity MouseOpacity;
     public Texture? TextureOverride;
+    /// <summary>
+    /// TextureOverride is a render target that was already blended. Don't multiply by alpha again.
+    /// </summary>
+    public bool PremultipliedTexture;
     public string? Maptext;
     public Vector2i? MaptextSize;
     public ParticleSystem? Particles;
@@ -63,6 +67,7 @@ internal sealed class RendererMetaData : IComparable<RendererMetaData> {
         BlendMode = BlendMode.Default;
         MouseOpacity = MouseOpacity.Transparent;
         TextureOverride = null;
+        PremultipliedTexture = false;
         Maptext = null;
         MaptextSize = null;
         Particles = null;

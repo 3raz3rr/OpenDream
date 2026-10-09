@@ -21,7 +21,7 @@ public sealed class ControlOutput(ControlDescriptor controlDescriptor, ControlWi
 
         _textBox.StyleBoxOverride = new StyleBoxFlat((ControlDescriptor.BackgroundColor.Value != Color.Transparent)
             ? ControlDescriptor.BackgroundColor.Value
-            : Color.White);
+            : Color.FromHex("#111318"));
     }
 
     public override void Output(string value, string? data) {

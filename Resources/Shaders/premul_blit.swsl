@@ -1,0 +1,8 @@
+// Copy a texture that was already blended over transparency.
+// Its RGB is premultiplied, so the blend must not multiply by alpha again.
+blend_mode premultiplied;
+light_mode unshaded;
+
+void fragment() {
+    COLOR = zTexture(UV);
+}

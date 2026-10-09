@@ -44,6 +44,11 @@
   path: "/Shaders/blendoverlay.swsl"
 
 - type: shader
+  id: premul_blit
+  kind: source
+  path: "/Shaders/premul_blit.swsl"
+
+- type: shader
   id: blend_add
   kind: source
   path: "/Shaders/blendadd.swsl"

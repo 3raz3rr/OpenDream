@@ -29,7 +29,8 @@ public sealed class OutputControl : Control {
                     HScrollEnabled = false,
                     Children = {
                         (_messageContainer = new BoxContainer {
-                            Orientation = BoxContainer.LayoutOrientation.Vertical
+                            Orientation = BoxContainer.LayoutOrientation.Vertical,
+                            HorizontalExpand = true
                         })
                     }
                 }
@@ -37,12 +38,25 @@ public sealed class OutputControl : Control {
         };
 
         AddChild(_panelContainer);
+        OnResized += WrapMessages;
     }
 
     public void AddMessage(FormattedMessage message) {
-        var label = new RichTextLabel();
+        var label = new RichTextLabel {
+            HorizontalExpand = true
+        };
 
         label.SetMessage(message);
         _messageContainer.AddChild(label);
+        WrapMessages();
+    }
+
+    private void WrapMessages() {
+        var width = Math.Max(Width, 1);
+        _messageContainer.SetWidth = width;
+        foreach (var child in _messageContainer.Children) {
+            child.SetWidth = width;
+            child.InvalidateMeasure();
+        }
     }
 }

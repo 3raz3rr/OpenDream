@@ -204,6 +204,7 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
             }
         } else if (pBrowse.HtmlSource != null) {
             var htmlFileName = $"browse_{pBrowse.Window}_{++_browseFileId}";
+            var html = InjectByondBridge(pBrowse.HtmlSource);
             ControlBrowser? outputBrowser = referencedElement as ControlBrowser;
 
             if (outputBrowser == null) {
@@ -234,7 +235,7 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                 return;
             }
 
-            var cacheFile = _dreamResource.CreateCacheFile(htmlFileName + ".html", pBrowse.HtmlSource);
+            var cacheFile = _dreamResource.CreateCacheFile(htmlFileName + ".html", html);
             outputBrowser.SetFileSource(cacheFile);
         }
     }
@@ -682,8 +683,8 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                 if (elementId == null) {
                     if (winSet.Attribute == "command") {
                         RunCommand(HandleEmbeddedWinget(controlId, winSet.Value, out _));
-                    } else {
-                        _sawmill.Error($"Invalid global winset \"{winsetParams}\"");
+                    } else if (winSet.Attribute != "browser-options") {
+                        NoteIgnoredWinset(winsetParams);
                     }
                 } else {
                     if(winSet.TrueStatements is not null) {
@@ -718,7 +719,7 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                         if (element != null) {
                             element.SetProperty(winSet.Attribute, HandleEmbeddedWinget(elementId, winSet.Value, out _), manualWinset: true);
                         } else {
-                            _sawmill.Error($"Invalid element \"{elementId}\"");
+                            NoteMissingElement(elementId);
                         }
                     }
                 }
@@ -753,7 +754,7 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                     element.SetProperty(attribute.Key, attribute.Value, manualWinset: true);
                 }
             } else {
-                _sawmill.Error($"Invalid element \"{controlId}\"");
+                NoteMissingElement(controlId);
             }
         }
     }
@@ -1002,96 +1003,29 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
         return builder.ToString();
     }
 
+    private readonly HashSet<string> _notedWinsetGaps = new();
+
+    private void NoteMissingElement(string id) {
+        if (_notedWinsetGaps.Add(id))
+            _sawmill.Warning($"Skin control \"{id}\" does not exist yet. Further winsets for it are ignored.");
+    }
+
+    private void NoteIgnoredWinset(string winsetParams) {
+        if (_notedWinsetGaps.Add(winsetParams))
+            _sawmill.Warning($"Ignoring unsupported winset \"{winsetParams}\".");
+    }
+
     /// <summary>
-    /// The station skin keeps a hidden 1x1 output and empty browsers where chat, say, and stat belong.
+    /// TGUI calls <c>byond://?...</c> with an empty host. CEF only accepts that if the page
+    /// assigns <c>location.href</c>, so the bridge is in the page before its own scripts run.
     /// </summary>
-    private void EnsurePlayableChrome() {
-        if (DefaultOutput != null) {
-            DefaultOutput.SetProperty("is-visible", "true");
-            DefaultOutput.SetProperty("pos", "0,0");
-            DefaultOutput.SetProperty("size", "0x0");
-            DefaultOutput.SetProperty("anchor1", "0,0");
-            DefaultOutput.SetProperty("anchor2", "100,92");
-            DefaultOutput.SetProperty("background-color", "#111318");
-            DefaultOutput.SetProperty("text-color", "#e6e6e6");
+    private static string InjectByondBridge(string html) {
+        const string bridge = "<script>window.cef_to_byond=function(u){window.location.href=u;}</script>";
+        var head = html.IndexOf("<head>", StringComparison.OrdinalIgnoreCase);
+        if (head >= 0)
+            return html.Insert(head + 6, bridge);
 
-            var chatWindow = FindWindowContaining(DefaultOutput);
-            if (FindElementWithId("input") == null && chatWindow != null) {
-                chatWindow.AddChild(new ControlDescriptorInput {
-                    Id = new DMFPropertyString("input"),
-                    Pos = new DMFPropertyPos(0, 0),
-                    Size = new DMFPropertySize(0, 0),
-                    Anchor1 = new DMFPropertyPos(0, 92),
-                    Anchor2 = new DMFPropertyPos(70, 100),
-                    IsVisible = new DMFPropertyBool(true),
-                    Command = new DMFPropertyString("!")
-                });
-                AddCommandButton(chatWindow, "saybutton", "Say", "say ", 70, 80);
-                AddCommandButton(chatWindow, "mebutton", "Me", "me ", 80, 90);
-                AddCommandButton(chatWindow, "oocbutton", "OOC", "ooc ", 90, 100);
-            }
-
-            chatWindow?.UpdateAnchors();
-        }
-
-        if (FindElementWithId("browseroutput") is InterfaceControl browserOutput)
-            browserOutput.SetProperty("is-visible", "false");
-
-        if (DefaultInfo != null)
-            return;
-
-        var statWindow = FindElementWithId("statwindow") as ControlWindow;
-        if (statWindow == null && FindElementWithId("statbrowser") is InterfaceControl statBrowserControl)
-            statWindow = FindWindowContaining(statBrowserControl);
-
-        if (statWindow == null)
-            return;
-
-        if (FindElementWithId("statbrowser") is InterfaceControl statBrowser)
-            statBrowser.SetProperty("is-visible", "false");
-
-        statWindow.AddChild(new ControlDescriptorInfo {
-            Id = new DMFPropertyString("stat"),
-            Pos = new DMFPropertyPos(0, 0),
-            Size = new DMFPropertySize(0, 0),
-            Anchor1 = new DMFPropertyPos(0, 0),
-            Anchor2 = new DMFPropertyPos(100, 100),
-            IsVisible = new DMFPropertyBool(true),
-            IsDefault = new DMFPropertyBool(true)
-        });
-
-        if (FindElementWithId("stat") is ControlInfo info) {
-            info.SetProperty("background-color", "#111318");
-            info.SetProperty("text-color", "#e6e6e6");
-            info.SetProperty("tab-text-color", "#e6e6e6");
-            info.SetProperty("tab-background-color", "#1c2030");
-            info.SetProperty("highlight-color", "#8ab4ff");
-            DefaultInfo = info;
-        }
-
-        statWindow.UpdateAnchors();
-    }
-
-    private static void AddCommandButton(ControlWindow window, string id, string text, string prefix, int left, int right) {
-        window.AddChild(new ControlDescriptorButton {
-            Id = new DMFPropertyString(id),
-            Pos = new DMFPropertyPos(0, 0),
-            Size = new DMFPropertySize(0, 0),
-            Anchor1 = new DMFPropertyPos(left, 92),
-            Anchor2 = new DMFPropertyPos(right, 100),
-            IsVisible = new DMFPropertyBool(true),
-            Text = new DMFPropertyString(text),
-            Command = new DMFPropertyString($".winset input.text=\"{prefix}\";input.focus=true")
-        });
-    }
-
-    private ControlWindow? FindWindowContaining(InterfaceControl control) {
-        foreach (var window in Windows.Values) {
-            if (window.ChildControls.Contains(control))
-                return window;
-        }
-
-        return null;
+        return bridge + html;
     }
 
     private void LoadInterface(InterfaceDescriptor descriptor) {
@@ -1122,8 +1056,6 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                 }
             }
         }
-
-        EnsurePlayableChrome();
 
         if (DefaultWindow == null)
             throw new Exception("Given DMF did not have a default window");

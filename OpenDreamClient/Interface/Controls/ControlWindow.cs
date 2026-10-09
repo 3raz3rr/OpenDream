@@ -185,6 +185,12 @@ public sealed partial class ControlWindow : InterfaceControl {
 
         //if our window is null or closed, we need to create a new one. Otherwise we need to update the existing one.
         if(osWindow == null && clydeWindow == null) {
+            // The default window is moved onto the existing Clyde window once the skin loads.
+            // Opening an OS window for it here shows a second window and then destroys it.
+            // Hidden windows are created later, when something actually shows them.
+            if (WindowDescriptor.IsDefault.Value || !WindowDescriptor.IsVisible.Value)
+                return;
+
             CreateWindow();
             return; //we return because CreateWindow() calls UpdateWindowAttributes() again.
         }
@@ -208,6 +214,13 @@ public sealed partial class ControlWindow : InterfaceControl {
             osWindow.ClydeWindow.IsVisible = WindowDescriptor.IsVisible.Value;
         } else if (clydeWindow != null) {
             clydeWindow.IsVisible = WindowDescriptor.IsVisible.Value;
+        }
+
+        if (WindowDescriptor.IsVisible.Value) {
+            foreach (var child in ChildControls) {
+                if (child is ControlBrowser browser)
+                    browser.ActivatePending();
+            }
         }
     }
 

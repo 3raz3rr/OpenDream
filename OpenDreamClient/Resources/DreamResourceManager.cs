@@ -251,22 +251,15 @@ internal sealed partial class DreamResourceManager : IDreamResourceManager {
     /// <returns></returns>
     public bool EnsureCacheFile(string filename, int timeoutSeconds = 5) {
         var actualPath = GetCacheFilePath(filename);
-        if (_resourceManager.UserData.Exists(actualPath)) {
+        if (_resourceManager.UserData.Exists(actualPath))
             return true;
-        } else {
-            if (_activeBrowseRscRequests.Contains(actualPath.Filename)) {
-                //block until the file arrives for like 5 seconds, then give up
-                DateTime thresholdTime = DateTime.Now.AddSeconds(timeoutSeconds);
-                while (!_resourceManager.UserData.Exists(actualPath) && DateTime.Now < thresholdTime) {
-                    _netManager.ProcessPackets(); //todo this should be sleep
-                }
 
-                return _resourceManager.UserData.Exists(actualPath);
-            } else {
-                _sawmill.Error($"Cache was ensured for a file ({filename}) that does not exist in cache and is not requested. Probably somebody called browse() without browse_rsc() first.");
-                return false;
-            }
-        }
+        // This runs on the CEF request thread. Waiting here used to spin the network
+        // stack for several seconds and froze the client whenever a page asked early.
+        if (!_activeBrowseRscRequests.Contains(actualPath.Filename))
+            _sawmill.Error($"Cache was ensured for a file ({filename}) that does not exist in cache and is not requested. Probably somebody called browse() without browse_rsc() first.");
+
+        return false;
     }
 
     private DreamResource? GetCachedResource(int resourceId) {

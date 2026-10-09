@@ -14,7 +14,10 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         public readonly EntityUid Uid = uid;
         public readonly TransformComponent Transform = transform;
         public readonly DMISpriteComponent Sprite = sprite;
+        public Vector2 StartPos;
         public Vector2 EndPos;
+        public TimeSpan StartTime;
+        public float Duration;
     }
 
     [Dependency] private TransformSystem _transformSystem = default!;
@@ -24,6 +27,7 @@ public sealed partial class AtomGlideSystem : EntitySystem {
     private EntityQuery<DMISpriteComponent> _spriteQuery;
 
     private readonly List<Glide> _currentGlides = new();
+    private readonly Dictionary<EntityUid, TimeSpan> _lastMoveAt = new();
 
     /// <summary>
     /// Ignore MoveEvent when this is true.
@@ -41,6 +45,7 @@ public sealed partial class AtomGlideSystem : EntitySystem {
 
     public override void Shutdown() {
         _currentGlides.Clear();
+        _lastMoveAt.Clear();
     }
 
     public override void FrameUpdate(float frameTime) {
@@ -50,41 +55,22 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         _transformSystem.Reset();
 
         _ignoreMoveEvent = false;
+        var now = _gameTiming.RealTime;
 
         for (int i = 0; i < _currentGlides.Count; i++) {
             var glide = _currentGlides[i];
 
             if (_entityManager.Deleted(glide.Uid) || glide.Sprite.Icon.Appearance == null) {
+                _lastMoveAt.Remove(glide.Uid);
                 _currentGlides.RemoveSwap(i--);
                 continue;
             }
 
-            var currentPos = glide.Transform.LocalPosition;
-            var newPos = currentPos;
-            var movementSpeed = CalculateMovementSpeed(_interfaceManager.IconSize, glide.Sprite.Icon.Appearance.GlideSize);
-            var movement = movementSpeed * frameTime;
-
-            // Move X towards the end position at a constant speed
-            if (!MathHelper.CloseTo(currentPos.X, glide.EndPos.X)) {
-                if (currentPos.X < glide.EndPos.X)
-                    newPos.X = Math.Min(glide.EndPos.X, newPos.X + movement);
-                else if (currentPos.X > glide.EndPos.X)
-                    newPos.X = Math.Max(glide.EndPos.X, newPos.X - movement);
-            }
-
-            // Move Y towards the end position at a constant speed
-            if (!MathHelper.CloseTo(currentPos.Y, glide.EndPos.Y)) {
-                if (currentPos.Y < glide.EndPos.Y)
-                    newPos.Y = Math.Min(glide.EndPos.Y, newPos.Y + movement);
-                else if (currentPos.Y > glide.EndPos.Y)
-                    newPos.Y = Math.Max(glide.EndPos.Y, newPos.Y - movement);
-            }
-
-            if (newPos.EqualsApprox(glide.EndPos)) { // Glide is finished
-                newPos = glide.EndPos;
-
+            var elapsed = (float)(now - glide.StartTime).TotalSeconds;
+            var t = glide.Duration <= 0.0001f ? 1f : Math.Clamp(elapsed / glide.Duration, 0f, 1f);
+            var newPos = t >= 1f ? glide.EndPos : Vector2.Lerp(glide.StartPos, glide.EndPos, t);
+            if (t >= 1f)
                 _currentGlides.RemoveSwap(i--);
-            }
 
             _ignoreMoveEvent = true;
             _transformSystem.SetLocalPositionNoLerp(glide.Uid, newPos, glide.Transform);
@@ -113,19 +99,36 @@ public sealed partial class AtomGlideSystem : EntitySystem {
             break;
         }
 
-        var startingFrom = glide?.EndPos ?? e.OldPosition.Position;
+        // OldPosition is where the sprite actually was. Skipping ahead to the previous
+        // destination teleports the camera and every moving atom at the start of each step.
+        var startingFrom = e.OldPosition.Position;
         var glidingTo = e.NewPosition.Position;
+        var distance = (glidingTo - startingFrom).Length();
 
         // Moving a greater distance than 2 tiles. Don't glide.
         // TODO: Support step_size values (I think that's what decides whether or not to glide?)
-        if ((glidingTo - startingFrom).Length() > 2f) {
+        if (distance > 2f) {
             // Stop the current glide if there is one
             if (glide != null)
                 _currentGlides.Remove(glide);
 
+            _lastMoveAt.Remove(e.Sender);
             _ignoreMoveEvent = false;
             return;
         }
+
+        var now = _gameTiming.RealTime;
+        var speed = CalculateMovementSpeed(_interfaceManager.IconSize, sprite.Icon.Appearance.GlideSize);
+        var duration = speed > 0f ? distance / speed : 0f;
+        // A step that ends before the next position packet sits still, which reads as a low frame rate.
+        // Stretch it to the recent gap, and leave a real pause (standing still) alone.
+        if (_lastMoveAt.TryGetValue(e.Sender, out var previous)) {
+            var gap = (float)(now - previous).TotalSeconds;
+            if (gap > duration && gap < 0.3f)
+                duration = gap;
+        }
+
+        _lastMoveAt[e.Sender] = now;
 
         if (glide == null) {
             glide = new(e.Sender, e.Component, sprite);
@@ -135,7 +138,10 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         // Move the transform to our starting point
         _transformSystem.SetLocalPositionNoLerp(e.Sender, startingFrom, e.Component);
 
+        glide.StartPos = startingFrom;
         glide.EndPos = glidingTo;
+        glide.StartTime = now;
+        glide.Duration = Math.Max(duration, 0.001f);
         _ignoreMoveEvent = false;
     }
 
