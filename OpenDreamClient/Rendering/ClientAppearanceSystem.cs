@@ -1,4 +1,5 @@
-﻿using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using OpenDreamClient.Interface;
 using OpenDreamShared.Dream;
 using SharedAppearanceSystem = OpenDreamShared.Rendering.SharedAppearanceSystem;
@@ -58,6 +59,7 @@ internal sealed partial class ClientAppearanceSystem : SharedAppearanceSystem {
     private readonly Dictionary<(int X, int Y, int Z), Flick> _turfFlicks = new();
     private readonly Dictionary<EntityUid, Flick> _movableFlicks = new();
     private bool _receivedAllAppearancesMsg;
+    private readonly List<uint> _pendingResolve = new();
     private float _refreshVerbRemainingTime = 0.5f;
     private readonly float _refreshVerbPeriod = 0.5f;
 
@@ -87,6 +89,7 @@ internal sealed partial class ClientAppearanceSystem : SharedAppearanceSystem {
 
     public override void Shutdown() {
         _receivedAllAppearancesMsg = false;
+        _pendingResolve.Clear();
         _appearances.Clear();
         _appearanceLoadCallbacks.Clear();
         _turfIcons.Clear();
@@ -115,25 +118,91 @@ internal sealed partial class ClientAppearanceSystem : SharedAppearanceSystem {
 
     public void SetAllAppearances(Dictionary<uint, ImmutableAppearance> appearances) {
         _appearances = appearances;
-        _receivedAllAppearancesMsg = true;
+        _pendingResolve.Clear();
+        FinishInitialAppearances();
+    }
 
-        //need to do this because all overlays can't be resolved until the whole appearance table is populated
-        foreach(KeyValuePair<uint, ImmutableAppearance> pair in _appearances) {
-            pair.Value.ResolveOverlays(this);
+    public void IngestAppearanceChunk(byte[] data) {
+        var decompressed = MsgAllAppearances.DecompressAppearances(new MemoryStream(data));
+        var count = decompressed.ReadInt32();
+
+        for (var i = 0; i < count; i++) {
+            var appearance = new ImmutableAppearance(decompressed, _serializer);
+            var appearanceId = appearance.MustGetId();
+            _appearances[appearanceId] = appearance;
+
+            if (_receivedAllAppearancesMsg)
+                ActivateAppearance(appearanceId);
+            else
+                TryActivateAppearance(appearanceId);
         }
 
-        // Callbacks called in another pass to ensure all appearances are initialized first
-        foreach (var callbackPair in _appearanceLoadCallbacks) {
-            if (!_appearances.TryGetValue(callbackPair.Key, out var appearance))
+        if (!_receivedAllAppearancesMsg)
+            RetryPendingAppearances();
+    }
+
+    public void CompleteInitialAppearances() {
+        FinishInitialAppearances();
+    }
+
+    private void FinishInitialAppearances() {
+        _receivedAllAppearancesMsg = true;
+
+        // Already-resolved entries no-op. Anything still waiting on a later chunk is resolved now.
+        foreach (var appearance in _appearances.Values)
+            appearance.ResolveOverlays(this);
+        _pendingResolve.Clear();
+
+        var waiting = new List<uint>(_appearanceLoadCallbacks.Keys);
+        foreach (var appearanceId in waiting)
+            DeliverAppearance(appearanceId);
+    }
+
+    private void TryActivateAppearance(uint appearanceId) {
+        if (!_appearances.TryGetValue(appearanceId, out var appearance))
+            return;
+        if (!appearance.TryResolveOverlays(LookupAppearance)) {
+            _pendingResolve.Add(appearanceId);
+            return;
+        }
+
+        DeliverAppearance(appearanceId);
+    }
+
+    private void RetryPendingAppearances() {
+        for (var i = _pendingResolve.Count - 1; i >= 0; i--) {
+            var appearanceId = _pendingResolve[i];
+            if (!_appearances.TryGetValue(appearanceId, out var appearance) ||
+                !appearance.TryResolveOverlays(LookupAppearance))
                 continue;
 
-            foreach (var callback in callbackPair.Value)
-                callback(appearance);
+            _pendingResolve.RemoveAt(i);
+            DeliverAppearance(appearanceId);
         }
     }
 
+    private void ActivateAppearance(uint appearanceId) {
+        _appearances[appearanceId].ResolveOverlays(this);
+        DeliverAppearance(appearanceId);
+    }
+
+    private void DeliverAppearance(uint appearanceId) {
+        if (!_appearanceLoadCallbacks.Remove(appearanceId, out var callbacks))
+            return;
+        if (!_appearances.TryGetValue(appearanceId, out var appearance))
+            return;
+
+        foreach (var callback in callbacks)
+            callback(appearance);
+    }
+
+    private ImmutableAppearance? LookupAppearance(uint appearanceId) {
+        return _appearances.TryGetValue(appearanceId, out var appearance) ? appearance : null;
+    }
+
     public void LoadAppearance(uint appearanceId, Action<ImmutableAppearance> loadCallback) {
-        if (_appearances.TryGetValue(appearanceId, out var appearance) && _receivedAllAppearancesMsg) {
+        if (_appearances.TryGetValue(appearanceId, out var appearance) &&
+            (_receivedAllAppearancesMsg || appearance.TryResolveOverlays(LookupAppearance))) {
             loadCallback(appearance);
             return;
         }
@@ -165,15 +234,15 @@ internal sealed partial class ClientAppearanceSystem : SharedAppearanceSystem {
             uint appearanceId = appearance.MustGetId();
             _appearances[appearanceId] = appearance;
 
-            // If we haven't received the MsgAllAppearances yet, leave this initialization for later
-            if (_receivedAllAppearancesMsg) {
-                _appearances[appearanceId].ResolveOverlays(this);
-
-                if (_appearanceLoadCallbacks.TryGetValue(appearanceId, out var callbacks)) {
-                    foreach (var callback in callbacks) callback(_appearances[appearanceId]);
-                }
-            }
+            // Chunks of the join dump are still arriving. Overlay ids in a later slice stay pending.
+            if (_receivedAllAppearancesMsg)
+                ActivateAppearance(appearanceId);
+            else
+                TryActivateAppearance(appearanceId);
         }
+
+        if (!_receivedAllAppearancesMsg)
+            RetryPendingAppearances();
     }
 
     private void OnRemoveAppearances(RemoveAppearancesEvent e) {

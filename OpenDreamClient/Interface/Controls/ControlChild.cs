@@ -34,9 +34,7 @@ internal sealed class ControlChild(ControlDescriptor controlDescriptor, ControlW
         _splitter.Vertical = ChildDescriptor.IsVert.Value;
         _splitter.SplitterPercentage = ChildDescriptor.Splitter.Value / 100f;
         _splitter.DragStyleBoxOverride = new StyleBoxColoredTexture {
-            BackgroundColor = (ChildDescriptor.BackgroundColor.Value != Color.Transparent)
-                ? ChildDescriptor.BackgroundColor.Value
-                : DreamStylesheet.DefaultBackgroundColor,
+            BackgroundColor = new Color(1f, 1f, 1f, 0.16f),
             Texture = IoCManager.Resolve<IResourceCache>().GetResource<TextureResource>("/Textures/Interface/SplitterBorder.png"),
             PatchMarginTop = 1,
             PatchMarginLeft = 1,

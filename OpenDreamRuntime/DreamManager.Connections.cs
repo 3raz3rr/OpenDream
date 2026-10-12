@@ -75,6 +75,8 @@ public sealed partial class DreamManager {
         _netManager.RegisterNetMessage<MsgSound>();
         _netManager.RegisterNetMessage<MsgUpdateClientInfo>();
         _netManager.RegisterNetMessage<MsgAllAppearances>();
+        _netManager.RegisterNetMessage<MsgAppearanceChunk>();
+        _netManager.RegisterNetMessage<MsgAppearancesComplete>();
 
         var topicPort = _config.GetCVar(OpenDreamCVars.TopicPort);
         var worldTopicAddress = new IPEndPoint(IPAddress.Loopback, topicPort);

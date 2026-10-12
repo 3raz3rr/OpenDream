@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
 using OpenDreamShared.Dream;
+using SpaceWizards.Sodium;
 namespace OpenDreamRuntime.Resources;
 
 [Virtual]
@@ -30,10 +31,29 @@ public class DreamResource(int id, string? filePath, string? resourcePath) {
             #endif
 
             _resourceDataBacking = value;
+            _contentHash = null;
         }
     }
 
     private byte[]? _resourceDataBacking;
+    private byte[]? _contentHash;
+
+    /// <summary>
+    /// Blake2 of <see cref="ResourceData"/>. browse_rsc sends this before the file, and the same file is named many times.
+    /// </summary>
+    public byte[] ContentHash {
+        get {
+            if (_contentHash != null)
+                return _contentHash;
+
+            var data = ResourceData;
+            if (data == null)
+                return [];
+
+            _contentHash = CryptoGenericHashBlake2B.Hash(32, data, ReadOnlySpan<byte>.Empty);
+            return _contentHash;
+        }
+    }
 
     #if TOOLS
     private ProfilerMemory? _tracyMemoryId;
@@ -49,6 +69,7 @@ public class DreamResource(int id, string? filePath, string? resourcePath) {
     /// </summary>
     public void ReloadFromDisk() {
         _resourceDataBacking = null;
+        _contentHash = null;
     }
 
     public virtual string? ReadAsString() {
@@ -85,6 +106,7 @@ public class DreamResource(int id, string? filePath, string? resourcePath) {
         CreateDirectory();
         File.AppendAllText(ResourcePath, text + "\r\n");
         _resourceDataBacking = null;
+        _contentHash = null;
     }
 
     private void CreateDirectory() {

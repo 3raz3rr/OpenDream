@@ -36,12 +36,22 @@ public sealed partial class DreamObjectWorld : DreamObject {
 
     private double TickLag {
         get => _gameTiming.TickPeriod.TotalMilliseconds / 100;
-        set => _gameTiming.TickRate = (byte)(1000 / (value * 100));
+        set => ApplySimulationRate(value <= 0 ? 10 : (int)Math.Round(1000d / (value * 100d)));
     }
 
     private int Fps {
         get => _gameTiming.TickRate;
-        set => _gameTiming.TickRate = (byte)value;
+        set => ApplySimulationRate(value);
+    }
+
+    /// <summary>
+    /// world.fps writes the local clock and the replicated net.tickrate.
+    /// The client glide uses the replicated value, so leaving the cvar at 30 finishes steps early.
+    /// </summary>
+    private void ApplySimulationRate(int ticksPerSecond) {
+        var ticks = (byte)Math.Clamp(ticksPerSecond, 1, 255);
+        _gameTiming.TickRate = ticks;
+        _cfg.SetCVar(CVars.NetTickrate, (int)ticks);
     }
 
     /// <summary> Determines whether we try to show IPv6 or IPv4 to the user during .address and .internet_address queries.</summary>

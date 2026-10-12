@@ -78,7 +78,7 @@ internal sealed partial class ContextMenuPopup : Popup {
         }
 
         // Add the screen object directly under the mouse, if any
-        var atomUnderMouse = _mouseInputSystem.GetAtomUnderMouse(viewport, relativePos, pointerLocation, sampleGpu: true);
+        var atomUnderMouse = _mouseInputSystem.GetAtomUnderMouse(viewport, relativePos, pointerLocation);
         if (atomUnderMouse is { IsScreen: true }) {
             var uid = _entityManager.GetEntity(atomUnderMouse.Value.Atom.Entity);
 

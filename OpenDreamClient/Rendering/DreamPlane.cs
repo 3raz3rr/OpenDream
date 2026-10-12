@@ -1,4 +1,4 @@
-﻿using OpenDreamShared.Dream;
+using OpenDreamShared.Dream;
 using Robust.Client.Graphics;
 using Robust.Shared.Utility;
 
@@ -31,6 +31,7 @@ internal sealed class DreamPlane(IRenderTexture mainRenderTarget) : IDisposable 
     public void SetMainRenderTarget(IRenderTexture renderTarget) {
         mainRenderTarget.Dispose();
         mainRenderTarget = renderTarget;
+        _cacheValid = false;
     }
 
     /// <summary>
@@ -39,6 +40,106 @@ internal sealed class DreamPlane(IRenderTexture mainRenderTarget) : IDisposable 
     public void SetTemporaryRenderTarget(IRenderTexture renderTarget) {
         DebugTools.Assert(_temporaryRenderTarget == null, "Temporary render target has already been set");
         _temporaryRenderTarget = renderTarget;
+    }
+
+    private int _contentSignature;
+    private bool _cacheValid;
+
+    /// <summary>
+    /// Draw the plane, or keep the texture from the previous frame when nothing on it changed.
+    /// Planes that sample a render source always redraw: their input is another plane from this frame.
+    /// </summary>
+    public void DrawCached(DreamViewOverlay overlay, DrawingHandleWorld handle, Box2 worldAABB) {
+        if (SamplesRenderSource() || _temporaryRenderTarget != null || HasFrameAnimatedSprite()) {
+            _cacheValid = false;
+            Draw(overlay, handle, worldAABB);
+            return;
+        }
+
+        var signature = ContentSignature(overlay, worldAABB);
+        if (_cacheValid && signature == _contentSignature)
+            return;
+
+        Draw(overlay, handle, worldAABB);
+        _contentSignature = signature;
+        _cacheValid = true;
+    }
+
+    public bool SamplesRenderSource() {
+        if (Master?.HasRenderSource == true)
+            return true;
+
+        foreach (var sprite in Sprites) {
+            if (sprite.HasRenderSource)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Top-most sprite whose icon rectangle contains the world point.
+    /// Sprites are stored in draw order, so the walk is back to front.
+    /// </summary>
+    public RendererMetaData? Pick(Vector2 worldPoint, int iconSize) {
+        if (Master?.MouseOpacity == MouseOpacity.Transparent || !Enabled)
+            return null;
+
+        for (var i = Sprites.Count - 1; i >= 0; i--) {
+            var sprite = Sprites[i];
+            if (sprite.MouseOpacity == MouseOpacity.Transparent || sprite.ShouldPassMouse || sprite.IsPlaneMaster)
+                continue;
+
+            var sizePx = sprite.MainIcon?.DMI?.IconSize ?? new Vector2i(iconSize, iconSize);
+            var size = sizePx / (float)iconSize;
+            var origin = sprite.Position + sprite.RenderPosOffset;
+            if (sprite.MainIcon != null)
+                origin += sprite.MainIcon.TextureRenderOffset / iconSize;
+
+            if (new Box2(origin, origin + size).Contains(worldPoint))
+                return sprite;
+        }
+
+        return null;
+    }
+
+    private int ContentSignature(DreamViewOverlay overlay, Box2 worldAABB) {
+        var hash = new HashCode();
+        hash.Add(worldAABB.BottomLeft.X);
+        hash.Add(worldAABB.BottomLeft.Y);
+        hash.Add(overlay.IconSize);
+        hash.Add(Enabled);
+        hash.Add(Sprites.Count);
+        foreach (var sprite in Sprites) {
+            hash.Add(sprite.Position.X);
+            hash.Add(sprite.Position.Y);
+            hash.Add(sprite.ClickUid);
+            hash.Add(sprite.TieBreaker);
+            hash.Add(sprite.Layer);
+            hash.Add(sprite.MainIcon?.Appearance?.GetHashCode() ?? 0);
+            hash.Add(sprite.AlphaToApply);
+            hash.Add(sprite.ColorToApply);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private bool HasFrameAnimatedSprite() {
+        foreach (var sprite in Sprites) {
+            if (sprite.Flick != null || sprite.Particles != null || IconAnimates(sprite.MainIcon))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IconAnimates(DreamIcon? icon) {
+        if (icon?.DMI == null || icon.Appearance == null)
+            return false;
+
+        var state = icon.DMI.Description.GetStateOrDefault(icon.Appearance.IconState);
+        var frames = state?.GetFrames(icon.Appearance.Direction);
+        return frames is { Length: > 1 };
     }
 
     /// <summary>

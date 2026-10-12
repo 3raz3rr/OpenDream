@@ -3,6 +3,8 @@ using System.Text;
 using System.Globalization;
 using OpenDreamShared.Network.Messages;
 using OpenDreamClient.Interface.Controls;
+using OpenDreamClient.Interface.Native;
+using OpenDreamClient.Rendering;
 using OpenDreamShared.Interface.Descriptors;
 using OpenDreamShared.Interface.DMF;
 using OpenDreamClient.Interface.Prompts;
@@ -77,6 +79,9 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     public int IconSize { get; private set; }
 
     private ViewRange _view = new(5);
+    private NativeInterfaceHost? _nativeHost;
+
+    internal NativeInterfaceHost? NativeHost => _nativeHost;
 
     public void LoadInterfaceFromSource(string source) {
         Reset();
@@ -113,6 +118,10 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     }
 
     public void Initialize() {
+        _nativeHost = new NativeInterfaceHost(
+            command => RunCommand(command),
+            query => _netManager.ClientSendMessage(new MsgTopic { Query = query }));
+
         SetupBaseDreamBinds();
 
         Cursors = new(_clyde);
@@ -191,6 +200,22 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     }
 
     private void RxBrowse(MsgBrowse pBrowse) {
+        // browse_queue_flush is a one-line script that only hops to byond://.
+        // A CEF page for each flush times out (no render frame) and the server
+        // waits the whole timeout, so the lobby stalls a few seconds per batch.
+        if (pBrowse.HtmlSource != null && TryExtractByondRedirect(pBrowse.HtmlSource, out var query)) {
+            _netManager.ClientSendMessage(new MsgTopic { Query = query });
+            return;
+        }
+
+        // Not a skin control. validate_assets.html only reads asset_data.json and
+        // posts it back; opening Chromium for that popup is a lobby hitch.
+        if (pBrowse.Window == "asset_cache_browser") {
+            if (pBrowse.HtmlSource != null && pBrowse.HtmlSource.Contains("asset_data.json", StringComparison.Ordinal))
+                TrySendCachedAssetPreload();
+            return;
+        }
+
         var referencedElement = (pBrowse.Window != null) ? FindElementWithId(pBrowse.Window) : DefaultWindow;
 
         if (pBrowse.HtmlSource == null && referencedElement != null) {
@@ -204,7 +229,7 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
             }
         } else if (pBrowse.HtmlSource != null) {
             var htmlFileName = $"browse_{pBrowse.Window}_{++_browseFileId}";
-            var html = InjectByondBridge(pBrowse.HtmlSource);
+            var html = InjectByondBridge(RewriteByondLocations(pBrowse.HtmlSource));
             ControlBrowser? outputBrowser = referencedElement as ControlBrowser;
 
             if (outputBrowser == null) {
@@ -234,6 +259,10 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
                 _sawmill.Error($"Failed to find a browser element in window \"{pBrowse.Window}\" to browse()");
                 return;
             }
+
+            // A registered screen owns its picture. The document is not loaded.
+            if (outputBrowser.IsNativeScreen)
+                return;
 
             var cacheFile = _dreamResource.CreateCacheFile(htmlFileName + ".html", html);
             outputBrowser.SetFileSource(cacheFile);
@@ -360,6 +389,13 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     public void FrameUpdate(FrameEventArgs frameEventArgs) {
         if (DefaultMap != null)
             DefaultMap.Viewport.Eye = _eyeManager.CurrentEye;
+
+        foreach (var window in Windows.Values) {
+            foreach (var child in window.ChildControls) {
+                if (child is ControlBrowser browser)
+                    browser.PumpScripts();
+            }
+        }
     }
 
     public InterfaceElement? FindElementWithId(string id) {
@@ -897,6 +933,15 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
         if (control != null) {
             string[] split = control.Split(":");
 
+            if (split[0] == "movekeys") {
+                if (_entitySystemManager.TryGetEntitySystem(out AtomGlideSystem? glide))
+                    glide.SetMoveKeys(value);
+                return;
+            }
+
+            if (_nativeHost != null && _nativeHost.TryApply(split[0], value, split.Length > 1 ? split[1] : null))
+                return;
+
             interfaceElement = (InterfaceControl?)FindElementWithId(split[0]);
             if (split.Length > 1) data = split[1];
         } else {
@@ -1016,11 +1061,121 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     }
 
     /// <summary>
-    /// TGUI calls <c>byond://?...</c> with an empty host. CEF only accepts that if the page
-    /// assigns <c>location.href</c>, so the bridge is in the page before its own scripts run.
+    /// Asset-cache arrival checks are a single <c>window.location.href='byond://?...'</c> script.
+    /// Real pages contain a document; those still go through CEF.
+    /// </summary>
+    private static bool TryExtractByondRedirect(string html, out string query) {
+        query = string.Empty;
+        if (html.Length > 512 || html.Contains("<html", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        const string marker = "window.location.href=";
+        var at = html.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0)
+            return false;
+
+        var quoteAt = at + marker.Length;
+        if (quoteAt >= html.Length)
+            return false;
+
+        var quote = html[quoteAt];
+        if (quote is not '\'' and not '"')
+            return false;
+
+        var start = quoteAt + 1;
+        var end = html.IndexOf(quote, start);
+        if (end < 0)
+            return false;
+
+        var url = html[start..end];
+        if (!url.StartsWith("byond://", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        query = url["byond://".Length..];
+        return query.Length == 0 || query[0] == '?';
+    }
+
+    /// <summary>
+    /// Static <c>location.href = "byond://..."</c> starts a Chromium navigation. That
+    /// navigation never gets a render frame and times out, which is the lobby stutter.
+    /// The bridge sends the same URL as an XHR the resource handler answers in place.
+    /// </summary>
+    private static string RewriteByondLocations(string html) {
+        const string marker = "location.href";
+        var rewritten = new StringBuilder(html.Length);
+        var index = 0;
+        while (true) {
+            var at = html.IndexOf(marker, index, StringComparison.Ordinal);
+            if (at < 0) {
+                rewritten.Append(html, index, html.Length - index);
+                return rewritten.ToString();
+            }
+
+            var cursor = at + marker.Length;
+            while (cursor < html.Length && char.IsWhiteSpace(html[cursor]))
+                cursor++;
+
+            if (cursor >= html.Length || html[cursor] != '=') {
+                rewritten.Append(html, index, at + marker.Length - index);
+                index = at + marker.Length;
+                continue;
+            }
+
+            cursor++;
+            while (cursor < html.Length && char.IsWhiteSpace(html[cursor]))
+                cursor++;
+
+            if (cursor >= html.Length || html[cursor] is not ('\'' or '"')) {
+                rewritten.Append(html, index, at + marker.Length - index);
+                index = at + marker.Length;
+                continue;
+            }
+
+            var quote = html[cursor];
+            var urlStart = cursor + 1;
+            var urlEnd = html.IndexOf(quote, urlStart);
+            if (urlEnd < 0 || !html.AsSpan(urlStart, urlEnd - urlStart).StartsWith("byond://")) {
+                rewritten.Append(html, index, at + marker.Length - index);
+                index = at + marker.Length;
+                continue;
+            }
+
+            var replaceFrom = at;
+            if (at >= 7 && html.AsSpan(at - 7, 7).SequenceEqual("window."))
+                replaceFrom = at - 7;
+
+            rewritten.Append(html, index, replaceFrom - index);
+            rewritten.Append("window.cef_to_byond(");
+            rewritten.Append(quote);
+            rewritten.Append(html, urlStart, urlEnd - urlStart);
+            rewritten.Append(quote);
+            rewritten.Append(')');
+            index = urlEnd + 1;
+        }
+    }
+
+    private void TrySendCachedAssetPreload() {
+        var path = _dreamResource.GetCacheFilePath("asset_data.json");
+        if (!_resourceManager.UserData.Exists(path))
+            return;
+
+        using var stream = _resourceManager.UserData.OpenRead(path);
+        using var reader = new StreamReader(stream);
+        var json = reader.ReadToEnd();
+        if (json.Length == 0)
+            return;
+
+        _netManager.ClientSendMessage(new MsgTopic {
+            Query = "?asset_cache_preload_data=" + Uri.EscapeDataString(json)
+        });
+    }
+
+    /// <summary>
+    /// TGUI calls <c>byond://?...</c> with an empty host. The bridge is in the page
+    /// before its own scripts run, and posts the URL without navigating.
     /// </summary>
     private static string InjectByondBridge(string html) {
-        const string bridge = "<script>window.cef_to_byond=function(u){window.location.href=u;}</script>";
+        const string bridge = "<script>window.cef_to_byond=function(u){var x=new XMLHttpRequest();x.open(\"GET\",\"/__opendream_topic?\"+encodeURIComponent(u),true);x.send();};</script>";
         var head = html.IndexOf("<head>", StringComparison.OrdinalIgnoreCase);
         if (head >= 0)
             return html.Insert(head + 6, bridge);

@@ -1,4 +1,4 @@
-﻿using OpenDreamClient.Input.ContextMenu;
+using OpenDreamClient.Input.ContextMenu;
 using OpenDreamClient.Interface;
 using OpenDreamClient.Interface.Controls.UI;
 using OpenDreamShared.Interface.Descriptors;
@@ -9,12 +9,9 @@ using Robust.Client.GameObjects;
 using Robust.Client.Graphics;
 using Robust.Client.Input;
 using Robust.Client.UserInterface;
-using Robust.Shared;
-using Robust.Shared.Configuration;
 using Robust.Shared.Input;
 using Robust.Shared.Input.Binding;
 using Robust.Shared.Map;
-using Robust.Shared.Timing;
 using Matrix3x2 = System.Numerics.Matrix3x2;
 
 namespace OpenDreamClient.Input;
@@ -26,23 +23,15 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
     [Dependency] private IOverlayManager _overlayManager = default!;
     [Dependency] private IEntityManager _entityManager = default!;
     [Dependency] private MapSystem _mapSystem = default!;
-    [Dependency] private IConfigurationManager _configurationManager = default!;
     [Dependency] private IDreamInterfaceManager _dreamInterfaceManager = default!;
     [Dependency] private ClientAppearanceSystem _appearanceSystem = default!;
     [Dependency] private IClyde _clyde = default!;
     [Dependency] private ILogManager _logManager = default!;
-    [Dependency] private IGameTiming _timing = default!;
     private ISawmill _sawmill = default!;
 
     private DreamViewOverlay? _dreamViewOverlay;
     private ContextMenuPopup _contextMenu = default!;
     private EntityClickInformation? _selectedEntity;
-    private TimeSpan _lastMouseSample;
-    private Vector2 _lastMouseSamplePos;
-    private (ClientObjectReference Atom, Vector2i IconPosition, bool IsScreen)? _lastUnderMouse;
-    private bool _hasUnderMouse;
-    private bool _hoverMapRequested;
-
     private sealed class EntityClickInformation(ClientObjectReference atom, ScreenCoordinates initialMousePos, ClickParams clickParams) {
         public readonly ClientObjectReference Atom = atom;
         public readonly ScreenCoordinates InitialMousePos = initialMousePos;
@@ -116,7 +105,7 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
         RaiseNetworkEvent(new MouseMoveEvent(atomRef, CreateClickParams(viewport, relativePos, iconPos)));
     }
 
-    public (ClientObjectReference Atom, Vector2i IconPosition, bool IsScreen)? GetAtomUnderMouse(ScalingViewport viewport, Vector2 relativePos, ScreenCoordinates globalPos, bool sampleGpu = false) {
+    public (ClientObjectReference Atom, Vector2i IconPosition, bool IsScreen)? GetAtomUnderMouse(ScalingViewport viewport, Vector2 relativePos, ScreenCoordinates globalPos) {
         _dreamViewOverlay ??= _overlayManager.GetOverlay<DreamViewOverlay>();
         if (_dreamViewOverlay == null || viewport.PixelSize.X <= 0 || viewport.PixelSize.Y <= 0)
             return null;
@@ -128,55 +117,22 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
             return null; // Was outside of the viewport
 
         var mapCoords = viewport.ScreenToMap(globalPos.Position);
-        var mousePos = (relativePos - viewportBox.TopLeft) / viewportBox.Size * viewport.ViewportSize;
-
-        // Hover used to redraw the whole map and then read it back from the GPU.
-        // That stall is what made the client unable to keep up while the cursor was on the map.
-        if (!sampleGpu) {
-            if (_dreamViewOverlay.MouseMap == null && !_hoverMapRequested) {
-                _dreamViewOverlay.MouseMapRequested = true;
-                _hoverMapRequested = true;
-            }
-
-            return _lastUnderMouse;
-        }
-
-        if (_dreamViewOverlay.MouseMap == null) {
-            _dreamViewOverlay.MouseMapRequested = true;
-            return _lastUnderMouse;
-        }
-
-        var now = _timing.RealTime;
-
-        if (mousePos.X < 0 || mousePos.Y < 0 || mousePos.X >= _dreamViewOverlay.MouseMap.Size.X || mousePos.Y >= _dreamViewOverlay.MouseMap.Size.Y)
+        var underMouse = _dreamViewOverlay.PickSprite(mapCoords.Position);
+        if (underMouse == null)
             return null;
 
-        if(_configurationManager.GetCVar(CVars.DisplayCompat))
-            return null; //Compat mode causes crashes with RT's GetPixel because OpenGL ES doesn't support GetTexImage()
-        var lookupColor = _dreamViewOverlay.MouseMap.GetPixel((int)mousePos.X, (int)mousePos.Y);
-        var underMouse = _dreamViewOverlay.MouseMapLookup.GetValueOrDefault(lookupColor);
-        (ClientObjectReference Atom, Vector2i IconPosition, bool IsScreen)? result = null;
-        if (underMouse == null) {
-            result = null;
-        } else if (underMouse.ClickUid == EntityUid.Invalid) { // A turf
+        if (underMouse.ClickUid == EntityUid.Invalid) { // A turf
             var turf = GetTurfUnderMouse(mapCoords, out _);
-            if (turf != null)
-                result = (turf.Value.Atom, turf.Value.IconPosition, false);
-        } else {
-            ImmutableAppearance? appearance = null;
-            if (_entityManager.TryGetComponent(underMouse.ClickUid, out DMISpriteComponent? sprite))
-                appearance = sprite.Icon.Appearance;
-
-            var iconPosition = IconPixelPosition(mapCoords.Position - underMouse.Position, appearance);
-            var reference = new ClientObjectReference(_entityManager.GetNetEntity(underMouse.ClickUid));
-            result = (reference, iconPosition, underMouse.IsScreen);
+            return turf == null ? null : (turf.Value.Atom, turf.Value.IconPosition, false);
         }
 
-        _lastMouseSample = now;
-        _lastMouseSamplePos = mousePos;
-        _hasUnderMouse = true;
-        _lastUnderMouse = result;
-        return result;
+        ImmutableAppearance? appearance = null;
+        if (_entityManager.TryGetComponent(underMouse.ClickUid, out DMISpriteComponent? sprite))
+            appearance = sprite.Icon.Appearance;
+
+        var iconPosition = IconPixelPosition(mapCoords.Position - underMouse.Position, appearance);
+        var reference = new ClientObjectReference(_entityManager.GetNetEntity(underMouse.ClickUid));
+        return (reference, iconPosition, underMouse.IsScreen);
     }
 
     public (ClientObjectReference Atom, Vector2i IconPosition)? GetTurfUnderMouse(MapCoordinates mapCoords, out uint? turfId) {
@@ -212,7 +168,7 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
             return true;
         }
 
-        var underMouse = GetAtomUnderMouse(viewport, args.RelativePixelPosition, args.PointerLocation, sampleGpu: true);
+        var underMouse = GetAtomUnderMouse(viewport, args.RelativePixelPosition, args.PointerLocation);
         if (underMouse == null)
             return false;
 
@@ -229,7 +185,7 @@ internal sealed partial class MouseInputSystem : SharedMouseInputSystem {
             return false;
         }
 
-        var overAtom = GetAtomUnderMouse(viewport, args.RelativePixelPosition, args.PointerLocation, sampleGpu: true);
+        var overAtom = GetAtomUnderMouse(viewport, args.RelativePixelPosition, args.PointerLocation);
         if (!_selectedEntity.IsDrag) {
             RaiseNetworkEvent(new AtomClickedEvent(_selectedEntity.Atom, _selectedEntity.ClickParams));
         } else {

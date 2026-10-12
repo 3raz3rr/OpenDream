@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using OpenDreamClient.Interface;
 using Robust.Client.Graphics;
 using Robust.Client.Player;
@@ -33,7 +33,7 @@ internal sealed partial class DreamViewOverlay : Overlay {
     /// The mouse map is a second full draw of the view, only needed to see what is under the cursor.
     /// Input sets this; the overlay draws it on the next frame instead of every frame.
     /// </summary>
-    public bool MouseMapRequested = true;
+    public bool MouseMapRequested;
 
     public int IconSize => _interfaceManager.IconSize;
     public Texture? MouseMap => _mouseMapRenderTarget?.Texture;
@@ -716,8 +716,9 @@ internal sealed partial class DreamViewOverlay : Overlay {
         using (var _ = _prof.Group("draw planes map")) {
             handle.RenderInRenderTarget(_baseRenderTarget!, () => {
                 // First pass fills every plane from this frame's sprites.
+                // A plane with no render_source keeps its texture when the sprites did not change.
                 foreach (int planeIndex in _planeOrder)
-                    Planes[planeIndex].Draw(this, handle, worldAABB);
+                    Planes[planeIndex].DrawCached(this, handle, worldAABB);
 
                 // Game objects are relayed onto a plane that sorts below their destination,
                 // so the first pass samples last frame's texture and they slide ahead of the floor.
@@ -757,6 +758,22 @@ internal sealed partial class DreamViewOverlay : Overlay {
                     Planes[planeIndex].DrawMouseMap(handle, this, _mouseMapRenderTarget!.Size, worldAABB);
             }, new Color());
         }
+    }
+
+    /// <summary>
+    /// Sprite under a world point, from the planes drawn last frame. Highest plane wins.
+    /// </summary>
+    public RendererMetaData? PickSprite(Vector2 worldPosition) {
+        for (var i = _planeOrder.Count - 1; i >= 0; i--) {
+            if (!Planes.TryGetValue(_planeOrder[i], out var plane))
+                continue;
+
+            var hit = plane.Pick(worldPosition, IconSize);
+            if (hit != null)
+                return hit;
+        }
+
+        return null;
     }
 
     private static bool PlaneSamplesRenderSource(DreamPlane plane) {

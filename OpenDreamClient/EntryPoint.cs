@@ -86,6 +86,8 @@ public sealed partial class EntryPoint : GameClient {
         IoCManager.Resolve<IDreamSoundEngine>().Initialize();
 
         _netManager.RegisterNetMessage<MsgAllAppearances>(RxAllAppearances);
+        _netManager.RegisterNetMessage<MsgAppearanceChunk>(RxAppearanceChunk);
+        _netManager.RegisterNetMessage<MsgAppearancesComplete>(RxAppearancesComplete);
 
         if (_configurationManager.GetCVar(CVars.DisplayCompat))
             _dreamInterface.OpenAlert(
@@ -112,5 +114,23 @@ public sealed partial class EntryPoint : GameClient {
         }
 
         clientAppearanceSystem.SetAllAppearances(message.AllAppearances);
+    }
+
+    private void RxAppearanceChunk(MsgAppearanceChunk message) {
+        if (!_entitySystemManager.TryGetEntitySystem<ClientAppearanceSystem>(out var clientAppearanceSystem)) {
+            Logger.GetSawmill("opendream").Error("Received MsgAppearanceChunk before initializing entity systems");
+            return;
+        }
+
+        clientAppearanceSystem.IngestAppearanceChunk(message.Data);
+    }
+
+    private void RxAppearancesComplete(MsgAppearancesComplete message) {
+        if (!_entitySystemManager.TryGetEntitySystem<ClientAppearanceSystem>(out var clientAppearanceSystem)) {
+            Logger.GetSawmill("opendream").Error("Received MsgAppearancesComplete before initializing entity systems");
+            return;
+        }
+
+        clientAppearanceSystem.CompleteInitialAppearances();
     }
 }

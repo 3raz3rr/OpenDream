@@ -10,7 +10,6 @@ using OpenDreamShared.Dream;
 using OpenDreamShared.Network.Messages;
 using Robust.Shared.Enums;
 using Robust.Shared.Player;
-using SpaceWizards.Sodium;
 
 namespace OpenDreamRuntime;
 
@@ -463,7 +462,7 @@ public sealed partial class DreamConnection {
 
         var msg = new MsgBrowseResource() {
             Filename = filename,
-            DataHash = CryptoGenericHashBlake2B.Hash(32, resource.ResourceData!, ReadOnlySpan<byte>.Empty)
+            DataHash = resource.ContentHash
         };
         _permittedBrowseRscFiles[filename] = resource;
 
@@ -485,6 +484,8 @@ public sealed partial class DreamConnection {
 
     public void Browse(string? body, string? options) {
         string? window = null;
+        string? file = null;
+        var display = true;
         Vector2i size = (480, 480);
 
         if (options != null) {
@@ -494,7 +495,7 @@ public sealed partial class DreamConnection {
                 if (optionTrimmed != string.Empty) {
                     string[] optionSeparated = optionTrimmed.Split("=", 2);
                     string key = optionSeparated[0];
-                    string value = optionSeparated[1];
+                    string value = optionSeparated.Length > 1 ? optionSeparated[1] : string.Empty;
 
                     if (key == "window") {
                         window = value;
@@ -502,9 +503,25 @@ public sealed partial class DreamConnection {
                         string[] sizeSeparated = value.Split("x", 2);
 
                         size = (int.Parse(sizeSeparated[0]), int.Parse(sizeSeparated[1]));
+                    } else if (key == "file") {
+                        file = value;
+                    } else if (key == "display") {
+                        display = value != "0";
                     }
                 }
             }
+        }
+
+        // display=0 only stores the file. A visible browse that also sets file=
+        // (the asset-cache ping) changes that file every batch; pushing it through
+        // browse_rsc makes the client delete and re-download it in a loop.
+        if (!display) {
+            if (file != null && body != null) {
+                var resource = _resourceManager.CreateResource(System.Text.Encoding.UTF8.GetBytes(body));
+                BrowseResource(resource, file);
+            }
+
+            return;
         }
 
         var msg = new MsgBrowse() {

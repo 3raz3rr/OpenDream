@@ -47,8 +47,18 @@ public sealed class OutputControl : Control {
         };
 
         label.SetMessage(message);
+        label.Margin = new Thickness(8, 1, 8, 1);
         _messageContainer.AddChild(label);
         WrapMessages();
+    }
+
+    public void Clear() {
+        _messageContainer.RemoveAllChildren();
+    }
+
+    public void Trim(int maxMessages) {
+        while (_messageContainer.ChildCount > maxMessages)
+            _messageContainer.RemoveChild(_messageContainer.GetChild(0));
     }
 
     private void WrapMessages() {

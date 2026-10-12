@@ -1,8 +1,9 @@
-﻿using OpenDreamShared.Dream;
+using OpenDreamShared.Dream;
 using Robust.Server.Player;
 using Robust.Shared.Enums;
 using System.Diagnostics.CodeAnalysis;
 using OpenDreamShared.Network.Messages;
+using Robust.Shared.Network;
 using Robust.Shared.Player;
 using System.Diagnostics;
 using System.Threading;
@@ -31,6 +32,7 @@ public sealed partial class ServerAppearanceSystem : SharedAppearanceSystem {
     private readonly Queue<uint> _appearanceRemovalQueue = new();
     private readonly List<ImmutableAppearance> _appearanceSendQueue = new();
     private readonly Dictionary<uint, ProxyWeakRef> _idToAppearance = new();
+    private readonly List<JoiningAppearances> _joining = new();
     private uint _counter;
 
     [Dependency] private DreamManager _dreamManager = default!;
@@ -69,6 +71,8 @@ public sealed partial class ServerAppearanceSystem : SharedAppearanceSystem {
                 _appearanceSendQueue.Clear();
             }
 
+            SendJoinBatches();
+
             if (_appearanceRemovalQueue.Count > 0) {
                 var removalEvent = new RemoveAppearancesEvent(_appearanceRemovalQueue.ToArray());
                 RaiseNetworkEvent(removalEvent);
@@ -93,19 +97,57 @@ public sealed partial class ServerAppearanceSystem : SharedAppearanceSystem {
     }
 
     private void OnPlayerStatusChanged(object? sender, SessionStatusEventArgs e) {
-        if (e.NewStatus == SessionStatus.InGame) {
-            //todo this is probably stupid slow
-            lock (_lock) {
-                Dictionary<uint, ImmutableAppearance> sendData = new(_appearanceLookup.Count);
+        if (e.NewStatus == SessionStatus.Disconnected) {
+            lock (_lock)
+                _joining.RemoveAll(join => join.Channel == e.Session.Channel);
+            return;
+        }
 
-                foreach(ProxyWeakRef proxyWeakRef in _appearanceLookup){
-                    if(proxyWeakRef.TryGetTarget(out var immutable))
-                        sendData.Add(immutable.MustGetId(), immutable);
-                }
+        if (e.NewStatus != SessionStatus.InGame)
+            return;
 
-                Logger.GetSawmill("appearance").Debug($"Sending {sendData.Count} appearances to new player {e.Session.Name}");
-                e.Session.Channel.SendMessage(new MsgAllAppearances(sendData));
+        // Compressing the whole dictionary here stalls the tick (join time dilation).
+        // Snapshot the ids and send MsgAllAppearances.JoinBatchCount per Update instead.
+        lock (_lock) {
+            _joining.RemoveAll(join => join.Channel == e.Session.Channel);
+
+            var ids = new uint[_idToAppearance.Count];
+            var count = 0;
+            foreach (var (id, weakRef) in _idToAppearance) {
+                if (weakRef.TryGetTarget(out _))
+                    ids[count++] = id;
             }
+
+            if (count != ids.Length)
+                Array.Resize(ref ids, count);
+
+            Logger.GetSawmill("appearance").Info($"Queuing {count} appearances for {e.Session.Name} in batches of {MsgAllAppearances.JoinBatchCount}");
+            _joining.Add(new JoiningAppearances(e.Session.Channel, ids));
+        }
+    }
+
+    private void SendJoinBatches() {
+        for (var i = _joining.Count - 1; i >= 0; i--) {
+            var join = _joining[i];
+            var end = Math.Min(join.Ids.Length, join.Cursor + MsgAllAppearances.JoinBatchCount);
+            var batch = new List<ImmutableAppearance>(end - join.Cursor);
+            for (; join.Cursor < end; join.Cursor++) {
+                var id = join.Ids[join.Cursor];
+                if (_idToAppearance.TryGetValue(id, out var weakRef) && weakRef.TryGetTarget(out var appearance))
+                    batch.Add(appearance);
+            }
+
+            if (batch.Count > 0) {
+                using var compressed = MsgAllAppearances.CompressAppearances(batch, batch.Count, _serializer);
+                join.Channel.SendMessage(new MsgAppearanceChunk(compressed.ToArray()));
+            }
+
+            if (join.Cursor < join.Ids.Length)
+                continue;
+
+            join.Channel.SendMessage(new MsgAppearancesComplete());
+            Logger.GetSawmill("appearance").Info($"Finished appearance sync for {join.Ids.Length} appearances");
+            _joining.RemoveAt(i);
         }
     }
 
@@ -179,6 +221,12 @@ public sealed partial class ServerAppearanceSystem : SharedAppearanceSystem {
 
         RaiseNetworkEvent(flickEvent, Filter.Pvs(mapCoords));
     }
+}
+
+internal sealed class JoiningAppearances(INetChannel channel, uint[] ids) {
+    public readonly INetChannel Channel = channel;
+    public readonly uint[] Ids = ids;
+    public int Cursor;
 }
 
 //this class lets us hold a weakref and also do quick lookups in hash tables

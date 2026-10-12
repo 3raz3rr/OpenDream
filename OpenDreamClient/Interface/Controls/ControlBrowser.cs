@@ -1,8 +1,11 @@
-﻿using System.IO;
+﻿using System.Collections.Concurrent;
+using System.IO;
 using System.Net;
 using System.Text;
 using System.Web;
+using OpenDreamClient.Interface.Native;
 using OpenDreamShared.Interface.Descriptors;
+using OpenDreamShared.Interface.DMF;
 using OpenDreamClient.Resources;
 using OpenDreamShared.Network.Messages;
 using Robust.Client.Graphics;
@@ -41,6 +44,17 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     private WebViewControl? _webView;
     private string? _pendingUrl;
     private readonly List<string> _pendingScripts = new();
+    private readonly ConcurrentQueue<string> _pendingTopics = new();
+    private bool _pageReady;
+    private bool _sawLoading;
+    private int _settleFrames;
+    private string? _navigatedUrl;
+    private NativePanel? _screen;
+
+    /// <summary>
+    /// Skin browsers the client draws itself. These never start a WebView.
+    /// </summary>
+    public bool IsNativeScreen => NativeInterfaceHost.IsSlot(Id.Value, Window?.Id.Value);
 
     public ControlBrowser(ControlDescriptor controlDescriptor, ControlWindow window)
         : base(controlDescriptor, window) {
@@ -52,6 +66,15 @@ internal sealed partial class ControlBrowser : InterfaceControl {
         // skin has several browsers that are never shown. Create the view on first use.
         _panel = new PanelContainer();
 
+        if (InterfaceManager is DreamInterfaceManager manager && manager.NativeHost != null) {
+            _screen = manager.NativeHost.Mount(Id.Value, Window?.Id.Value);
+            if (_screen != null) {
+                _screen.Root.HorizontalExpand = true;
+                _screen.Root.VerticalExpand = true;
+                _panel.AddChild(_screen.Root);
+            }
+        }
+
         if (ControlDescriptor.IsVisible.Value)
             OnShowEvent();
         else
@@ -61,6 +84,9 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     }
 
     private WebViewControl EnsureWebView() {
+        if (IsNativeScreen)
+            throw new InvalidOperationException($"Screen {Id.Value} is drawn by the client.");
+
         if (_webView != null)
             return _webView;
 
@@ -83,8 +109,10 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             ? new StyleBoxFlat(ControlDescriptor.BackgroundColor.Value)
             : null;
 
-        if (ControlDescriptor.IsVisible.Value)
+        if (ControlDescriptor.IsVisible.Value && !IsNativeScreen)
             ActivatePending();
+
+        _screen?.SetVisible(ControlDescriptor.IsVisible.Value);
     }
 
     public override void SetProperty(string property, string value, bool manualWinset = false) {
@@ -105,6 +133,14 @@ internal sealed partial class ControlBrowser : InterfaceControl {
         if (jsFunction == null)
             return;
 
+        if (_screen != null) {
+            _screen.ApplyState(value, jsFunction);
+            return;
+        }
+
+        if (IsNativeScreen)
+            return;
+
         // Prepare the argument to be used in JS
         //output is formatted by list2params sometimes, which means raw strings are url encoded, but the message contains & chars which are not encoded that are the params
         //so we split on &, url decode the parts, and then join them back together with , as the separator for the JS params
@@ -114,13 +150,30 @@ internal sealed partial class ControlBrowser : InterfaceControl {
         }
 
         var script = $"{jsFunction}({string.Join(",", parts)})";
-        // Hidden browsers, and browsers inside a hidden popup, must not start CEF just to run a script.
-        if (!HostIsReady()) {
+        // Hidden browsers must not start CEF. A visible page still has to finish loading
+        // before window.update exists, or the payload is thrown away.
+        if (!HostIsReady() || !_pageReady) {
             _pendingScripts.Add(script);
             return;
         }
 
         RunScript(script);
+    }
+
+    /// <summary>
+    /// Called every client frame. Delivers output() once the browse page has loaded.
+    /// </summary>
+    public void PumpScripts() {
+        while (_pendingTopics.TryDequeue(out var topic))
+            DispatchByondUrl(topic);
+
+        if (!UpdatePageReady() || _pendingScripts.Count == 0)
+            return;
+
+        var queued = _pendingScripts.ToArray();
+        _pendingScripts.Clear();
+        foreach (var script in queued)
+            RunScript(script);
     }
 
     /// <summary>
@@ -132,17 +185,11 @@ internal sealed partial class ControlBrowser : InterfaceControl {
 
         if (_pendingUrl != null)
             Navigate(_pendingUrl);
-
-        if (_pendingScripts.Count == 0)
-            return;
-
-        var queued = _pendingScripts.ToArray();
-        _pendingScripts.Clear();
-        foreach (var script in queued)
-            RunScript(script);
     }
 
     private void RunScript(string script) {
+        if (IsNativeScreen)
+            return;
         try {
             EnsureWebView().ExecuteJavaScript(script);
         } catch (Exception e) {
@@ -154,10 +201,17 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     public void SetFileSource(ResPath? filepath) {
         if (filepath == null) {
             _pendingUrl = null;
+            _navigatedUrl = null;
+            _pageReady = false;
+            _sawLoading = false;
+            _settleFrames = 0;
             if (_webView != null)
                 _webView.Url = "about:blank";
             return;
         }
+
+        if (IsNativeScreen)
+            return;
 
         // hostname must be the localhost IP for TGUI to work properly.
         // Hidden controls (the asset cache especially) get a browse() per file. Starting CEF
@@ -174,6 +228,9 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     /// Starting CEF then times out, because there is no OS window yet.
     /// </summary>
     private bool HostIsReady() {
+        if (IsNativeScreen)
+            return false;
+
         if (!ControlDescriptor.IsVisible.Value)
             return false;
 
@@ -184,11 +241,71 @@ internal sealed partial class ControlBrowser : InterfaceControl {
     }
 
     private void Navigate(string url) {
+        if (IsNativeScreen)
+            return;
         var webView = EnsureWebView();
-        if (webView.Url == url)
+        var samePage = string.Equals(_navigatedUrl, url, StringComparison.OrdinalIgnoreCase);
+        if (samePage && (_pageReady || _sawLoading || _settleFrames > 0 || webView.IsLoading))
             return;
 
+        _navigatedUrl = url;
+        _pageReady = false;
+        _sawLoading = false;
+        _settleFrames = 0;
         webView.Url = url;
+    }
+
+    private bool UpdatePageReady() {
+        if (_webView == null || _pendingUrl == null) {
+            _pageReady = false;
+            return false;
+        }
+
+        if (_pageReady)
+            return true;
+
+        if (_webView.IsLoading) {
+            _sawLoading = true;
+            return false;
+        }
+
+        if (!_sawLoading) {
+            // LoadUrl is async. A cached page may never report IsLoading, so settle for a few frames.
+            _settleFrames++;
+            if (_settleFrames < 3)
+                return false;
+        }
+
+        if (!PageUrlMatches(_webView.Url, _pendingUrl))
+            return false;
+
+        _pageReady = true;
+        return true;
+    }
+
+    private static bool PageUrlMatches(string actual, string expected) {
+        if (string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // CEF can add a slash or a query. Compare the path without UriKind, which the sandbox rejects.
+        var actualPath = PathAfterHost(actual);
+        var expectedPath = PathAfterHost(expected);
+        return actualPath != null && string.Equals(actualPath, expectedPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? PathAfterHost(string url) {
+        var scheme = url.IndexOf("://", StringComparison.Ordinal);
+        if (scheme < 0)
+            return null;
+
+        var start = url.IndexOf('/', scheme + 3);
+        if (start < 0)
+            return "/";
+
+        var query = url.IndexOf('?', start);
+        var hash = url.IndexOf('#', start);
+        var end = query < 0 ? hash : hash < 0 ? query : Math.Min(query, hash);
+        return end < 0 ? url[start..] : url[start..end];
     }
 
     private void BeforeBrowseHandler(IBeforeBrowseContext context) {
@@ -253,6 +370,16 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             Uri newUri = new Uri(context.Url);
 
             if (newUri is {Scheme: "http", Host: "127.0.0.1"}) {
+                // TGUI posts byond:// through this instead of location.href. A real
+                // navigation never gets a render frame and the lobby stalls on the timeout.
+                if (newUri.AbsolutePath == "/__opendream_topic") {
+                    var payload = HttpUtility.UrlDecode(newUri.Query.Length > 0 ? newUri.Query[1..] : string.Empty);
+                    if (payload.Length > 0)
+                        _pendingTopics.Enqueue(payload);
+                    context.DoRespondStream(Stream.Null, "text/plain", HttpStatusCode.NoContent);
+                    return;
+                }
+
                 Stream stream;
                 HttpStatusCode status;
                 var resource = new ResPath(newUri.AbsolutePath);

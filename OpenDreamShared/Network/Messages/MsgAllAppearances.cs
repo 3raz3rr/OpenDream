@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using Lidgren.Network;
@@ -10,6 +10,12 @@ using Robust.Shared.Utility;
 namespace OpenDreamShared.Network.Messages;
 
 public sealed class MsgAllAppearances(Dictionary<uint, ImmutableAppearance> allAppearances) : NetMessage {
+    /// <summary>
+    /// Appearances handed to one joining client per server tick.
+    /// A full dictionary in one message stalls the tick; this keeps a batch near a few milliseconds.
+    /// </summary>
+    public const int JoinBatchCount = 2048;
+
     public override MsgGroups MsgGroup => MsgGroups.EntityEvent;
     public Dictionary<uint, ImmutableAppearance> AllAppearances = allAppearances;
 

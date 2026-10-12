@@ -1,4 +1,4 @@
-﻿using OpenDreamClient.Interface;
+using OpenDreamClient.Interface;
 using Robust.Client.GameObjects;
 using Robust.Client.Graphics;
 using Robust.Shared.Timing;
@@ -18,6 +18,7 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         public Vector2 EndPos;
         public TimeSpan StartTime;
         public float Duration;
+        public bool Predicted;
     }
 
     [Dependency] private TransformSystem _transformSystem = default!;
@@ -39,11 +40,14 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         UpdatesBefore.Add(typeof(SharedTransformSystem));
 
         _spriteQuery = _entityManager.GetEntityQuery<DMISpriteComponent>();
+        _xformQuery = _entityManager.GetEntityQuery<TransformComponent>();
 
         _transformSystem.OnGlobalMoveEvent += OnTransformMove;
+        _input.FirstChanceOnKeyEvent += OnMoveKey;
     }
 
     public override void Shutdown() {
+        _input.FirstChanceOnKeyEvent -= OnMoveKey;
         _currentGlides.Clear();
         _lastMoveAt.Clear();
     }
@@ -76,14 +80,30 @@ public sealed partial class AtomGlideSystem : EntitySystem {
             _transformSystem.SetLocalPositionNoLerp(glide.Uid, newPos, glide.Transform);
             _ignoreMoveEvent = false;
         }
+
+        TickPrediction(now, frameTime);
     }
 
     /// <summary>
     /// Disables RT lerping and sets up the entity's glide
     /// </summary>
     private void OnTransformMove(ref MoveEvent e) {
-        if (_ignoreMoveEvent || e.ParentChanged)
+        if (_ignoreMoveEvent)
             return;
+        if (e.ParentChanged) {
+            if (IsLocal(e.Sender)) {
+                _confirmed = e.NewPosition.Position;
+                _visual = _confirmed;
+                _hasConfirmed = true;
+                _ownVisual = false;
+                _steering = false;
+                _blocked = false;
+                var riding = FindGlide(e.Sender);
+                if (riding != null)
+                    _currentGlides.Remove(riding);
+            }
+            return;
+        }
         if (!_spriteQuery.TryGetComponent(e.Sender, out var sprite) || sprite.Icon?.Appearance is null)
             return;
 
@@ -99,32 +119,100 @@ public sealed partial class AtomGlideSystem : EntitySystem {
             break;
         }
 
-        // OldPosition is where the sprite actually was. Skipping ahead to the previous
-        // destination teleports the camera and every moving atom at the start of each step.
-        var startingFrom = e.OldPosition.Position;
+        var now = _gameTiming.RealTime;
+        var tick = _gameTiming.TickRate > 0 ? 1f / _gameTiming.TickRate : 0.05f;
         var glidingTo = e.NewPosition.Position;
+        var walkedFrom = _hasConfirmed && IsLocal(e.Sender) ? _confirmed : glidingTo;
+        NoteServerMove(e.Sender, glidingTo, now);
+
+        Vector2? shovedFrom = null;
+        if (IsLocal(e.Sender) && _ownVisual) {
+            if ((glidingTo - _visual).Length() > 2f) {
+                _ownVisual = false;
+                _steering = false;
+                _blocked = false;
+                _visual = glidingTo;
+                if (glide != null)
+                    _currentGlides.Remove(glide);
+                _ignoreMoveEvent = false;
+                return;
+            }
+
+            var walk = OnWalk(walkedFrom, glidingTo);
+            var behind = _moveDir != Vector2.Zero && Vector2.Dot(glidingTo - _visual, _moveDir) <= 0.05f;
+            if (walk || behind) {
+                if (_blocked && (glidingTo - walkedFrom).LengthSquared() > 0.25f)
+                    _blocked = false;
+                if (glide != null)
+                    _currentGlides.Remove(glide);
+                _transformSystem.SetLocalPositionNoLerp(e.Sender, _visual, e.Component);
+                _ignoreMoveEvent = false;
+                return;
+            }
+
+            shovedFrom = _visual;
+            _ownVisual = false;
+            _steering = false;
+            _blocked = false;
+            if (glide != null) {
+                _currentGlides.Remove(glide);
+                glide = null;
+            }
+        }
+
+        // Where the sprite is, not the last authoritative tile. Restarting from that tile
+        // yanks the mob backward at the start of every step.
+        Vector2 startingFrom;
+        var sameBurst = false;
+        if (shovedFrom != null) {
+            startingFrom = shovedFrom.Value;
+        } else if (glide != null) {
+            var since = (float)(now - glide.StartTime).TotalSeconds;
+            sameBurst = since < tick * 0.5f;
+            startingFrom = sameBurst ? glide.StartPos : VisualPosition(glide, now);
+        } else {
+            startingFrom = e.OldPosition.Position;
+        }
+
         var distance = (glidingTo - startingFrom).Length();
 
         // Moving a greater distance than 2 tiles. Don't glide.
         // TODO: Support step_size values (I think that's what decides whether or not to glide?)
         if (distance > 2f) {
-            // Stop the current glide if there is one
             if (glide != null)
                 _currentGlides.Remove(glide);
 
             _lastMoveAt.Remove(e.Sender);
+            if (IsLocal(e.Sender)) {
+                _ownVisual = false;
+                _steering = false;
+                _blocked = false;
+                _visual = glidingTo;
+            }
             _ignoreMoveEvent = false;
             return;
         }
 
-        var now = _gameTiming.RealTime;
         var speed = CalculateMovementSpeed(_interfaceManager.IconSize, sprite.Icon.Appearance.GlideSize);
-        var duration = speed > 0f ? distance / speed : 0f;
-        // A step that ends before the next position packet sits still, which reads as a low frame rate.
-        // Stretch it to the recent gap, and leave a real pause (standing still) alone.
-        if (_lastMoveAt.TryGetValue(e.Sender, out var previous)) {
+        float duration;
+        if (glide != null && !sameBurst) {
+            var elapsed = (float)(now - glide.StartTime).TotalSeconds;
+            var remaining = Math.Max(0f, glide.Duration - elapsed);
+            var forward = Vector2.Dot(glidingTo - glide.EndPos, glide.EndPos - glide.StartPos);
+            if (forward > 0.0001f && speed > 0f)
+                duration = remaining + (glidingTo - glide.EndPos).Length() / speed;
+            else
+                duration = speed > 0f ? distance / speed : 0f;
+        } else {
+            duration = speed > 0f ? distance / speed : 0f;
+        }
+
+        // A step that finishes before the next one sits, then jerks. Stretch across that
+        // gap when it is still a walk. A real pause is longer than this and stays a pause.
+        // The local mob keeps the step period instead: stretching it makes every tile late.
+        if (!IsLocal(e.Sender) && !sameBurst && _lastMoveAt.TryGetValue(e.Sender, out var previous)) {
             var gap = (float)(now - previous).TotalSeconds;
-            if (gap > duration && gap < 0.3f)
+            if (gap > duration && gap <= duration * 1.6f && gap < duration + 0.12f)
                 duration = gap;
         }
 
@@ -135,7 +223,6 @@ public sealed partial class AtomGlideSystem : EntitySystem {
             _currentGlides.Add(glide);
         }
 
-        // Move the transform to our starting point
         _transformSystem.SetLocalPositionNoLerp(e.Sender, startingFrom, e.Component);
 
         glide.StartPos = startingFrom;
@@ -143,6 +230,12 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         glide.StartTime = now;
         glide.Duration = Math.Max(duration, 0.001f);
         _ignoreMoveEvent = false;
+    }
+
+    private static Vector2 VisualPosition(Glide glide, TimeSpan now) {
+        var elapsed = (float)(now - glide.StartTime).TotalSeconds;
+        var t = glide.Duration <= 0.0001f ? 1f : Math.Clamp(elapsed / glide.Duration, 0f, 1f);
+        return t >= 1f ? glide.EndPos : Vector2.Lerp(glide.StartPos, glide.EndPos, t);
     }
 
     private float CalculateMovementSpeed(int iconSize, float glideSize) {

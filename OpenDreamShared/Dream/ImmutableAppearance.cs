@@ -1,4 +1,4 @@
-﻿using System.Diagnostics.Contracts;
+using System.Diagnostics.Contracts;
 using System.IO;
 using Lidgren.Network;
 using Robust.Shared.Serialization;
@@ -146,6 +146,39 @@ public sealed class ImmutableAppearance : IEquatable<ImmutableAppearance> {
 
         _overlayIDs = null;
         _underlayIDs = null;
+    }
+
+    /// <summary>
+    /// Resolve overlay ids when every referenced appearance is already in the table.
+    /// Returns false without writing when a later chunk still has to arrive.
+    /// </summary>
+    public bool TryResolveOverlays(Func<uint, ImmutableAppearance?> lookup) {
+        if (!OverlayIdsReady(_overlayIDs, lookup) || !OverlayIdsReady(_underlayIDs, lookup))
+            return false;
+
+        if (_overlayIDs is not null)
+            for (int i = 0; i < _overlayIDs.Count; i++)
+                Overlays[i] = lookup(_overlayIDs[i])!;
+
+        if (_underlayIDs is not null)
+            for (int i = 0; i < _underlayIDs.Count; i++)
+                Underlays[i] = lookup(_underlayIDs[i])!;
+
+        _overlayIDs = null;
+        _underlayIDs = null;
+        return true;
+    }
+
+    private static bool OverlayIdsReady(List<uint>? ids, Func<uint, ImmutableAppearance?> lookup) {
+        if (ids is null)
+            return true;
+
+        foreach (var id in ids) {
+            if (lookup(id) is null)
+                return false;
+        }
+
+        return true;
     }
 
     public override bool Equals(object? obj) => obj is ImmutableAppearance immutable && Equals(immutable);

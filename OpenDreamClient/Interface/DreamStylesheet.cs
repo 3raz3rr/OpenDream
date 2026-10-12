@@ -190,6 +190,19 @@ public static class DreamStylesheet {
             Element<LineEdit>().Pseudo(LineEdit.StylePseudoClassPlaceholder)
                 .Prop("font-color", Color.FromHex("#7d7d7d")),
 
+            Element<LineEdit>().Class("NativeField")
+                .Prop(LineEdit.StylePropertyStyleBox, new StyleBoxFlat {
+                    BackgroundColor = Color.FromHex("#12151c"),
+                    BorderThickness = new Thickness(1),
+                    BorderColor = new Color(1f, 1f, 1f, 0.13f),
+                    ContentMarginLeftOverride = 8,
+                    ContentMarginTopOverride = 4,
+                    ContentMarginRightOverride = 8,
+                    ContentMarginBottomOverride = 4,
+                })
+                .Prop("font-color", Color.FromHex("#e8eaef"))
+                .Prop("cursor-color", Color.FromHex("#e8eaef")),
+
             // TextEdit
             Element<TextEdit>()
                 // default font color
