@@ -46,6 +46,8 @@ internal sealed class DreamIcon(RenderTargetPool renderTargetPool, IDreamInterfa
     //acts as a cache for the mutable appearance, so we don't have to ToMutable() every frame
     private MutableAppearance? _animatedAppearance;
     private AtomDirection _direction;
+    private AtomDirection? _directionOverride;
+    private AtomDirection? _inheritedParentDir;
     private string? _iconState;
 
     // TODO: We could cache these per-appearance instead of per-atom
@@ -135,12 +137,20 @@ internal sealed class DreamIcon(RenderTargetPool renderTargetPool, IDreamInterfa
         }
 
         appearanceSystem.LoadAppearance(appearanceId.Value, appearance => {
-            if (parentDir != null && appearance.InheritsDirection) {
-                _direction = parentDir.Value;
+            AtomDirection facing;
+            if (_directionOverride != null) {
+                facing = _directionOverride.Value;
+                if (appearance.Direction == _directionOverride)
+                    _directionOverride = null;
+            } else if (_inheritedParentDir != null && appearance.InheritsDirection) {
+                facing = _inheritedParentDir.Value;
+            } else if (parentDir != null && appearance.InheritsDirection) {
+                facing = parentDir.Value;
             } else {
-                _direction = appearance.Direction;
+                facing = appearance.Direction;
             }
 
+            _direction = facing;
             _iconState = appearance.IconState ?? parentIconState;
             Appearance = appearance;
         });
@@ -579,6 +589,37 @@ internal sealed class DreamIcon(RenderTargetPool renderTargetPool, IDreamInterfa
             _cachedAABB = aabb;
             SizeChanged?.Invoke();
         }
+    }
+
+    /// <summary>
+    /// Face this way now. A later appearance with an older dir must not turn it back.
+    /// </summary>
+    public void SetDirection(AtomDirection direction) {
+        _directionOverride = direction;
+        ApplyDirection(direction);
+    }
+
+    /// <summary>
+    /// An overlay follows its parent when the parent turns, if the icon inherits dir.
+    /// </summary>
+    public void InheritDirection(AtomDirection direction) {
+        _inheritedParentDir = direction;
+        if (Appearance is { InheritsDirection: false })
+            return;
+
+        ApplyDirection(direction);
+    }
+
+    private void ApplyDirection(AtomDirection direction) {
+        if (_direction != direction) {
+            _direction = direction;
+            DirtyTexture();
+        }
+
+        foreach (var overlay in Overlays)
+            overlay.InheritDirection(direction);
+        foreach (var underlay in Underlays)
+            underlay.InheritDirection(direction);
     }
 
     private void DirtyTexture() {

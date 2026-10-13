@@ -88,6 +88,10 @@ public sealed partial class EntryPoint : GameClient {
         _netManager.RegisterNetMessage<MsgAllAppearances>(RxAllAppearances);
         _netManager.RegisterNetMessage<MsgAppearanceChunk>(RxAppearanceChunk);
         _netManager.RegisterNetMessage<MsgAppearancesComplete>(RxAppearancesComplete);
+        // Registered here, before the handshake string table, so the step id is known.
+        // Entity systems initialize again on every join and cannot register messages.
+        _netManager.RegisterNetMessage<MsgMobStep>(RxMobStep);
+        _netManager.RegisterNetMessage<MsgMobFacing>(RxMobFacing);
 
         if (_configurationManager.GetCVar(CVars.DisplayCompat))
             _dreamInterface.OpenAlert(
@@ -105,6 +109,20 @@ public sealed partial class EntryPoint : GameClient {
             case ModUpdateLevel.PostEngine:
                 break;
         }
+    }
+
+    private void RxMobStep(MsgMobStep message) {
+        if (!_entitySystemManager.TryGetEntitySystem<AtomGlideSystem>(out var glide))
+            return;
+
+        glide.HandleMobStep(message);
+    }
+
+    private void RxMobFacing(MsgMobFacing message) {
+        if (!_entitySystemManager.TryGetEntitySystem<AtomGlideSystem>(out var glide))
+            return;
+
+        glide.HandleMobFacing(message);
     }
 
     private void RxAllAppearances(MsgAllAppearances message) {

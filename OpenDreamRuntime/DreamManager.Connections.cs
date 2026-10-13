@@ -51,6 +51,8 @@ public sealed partial class DreamManager {
         _netManager.RegisterNetMessage<MsgUpdateStatPanels>();
         _netManager.RegisterNetMessage<MsgSelectStatPanel>(RxSelectStatPanel);
         _netManager.RegisterNetMessage<MsgOutput>();
+        _netManager.RegisterNetMessage<MsgMobStep>();
+        _netManager.RegisterNetMessage<MsgMobFacing>();
         _netManager.RegisterNetMessage<MsgAlert>();
         _netManager.RegisterNetMessage<MsgPrompt>();
         _netManager.RegisterNetMessage<MsgPromptList>();

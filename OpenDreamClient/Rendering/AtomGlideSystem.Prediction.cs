@@ -19,16 +19,16 @@ public sealed partial class AtomGlideSystem {
     private int _clientDir = 1;
     private Vector2 _moveDir;
     private Vector2 _confirmed;
-    private Vector2 _visual;
     private Vector2 _steerDir;
+    private Vector2 _visualHold;
     private bool _hasConfirmed;
-    private bool _ownVisual;
     private bool _steering;
     private bool _blocked;
-    // True until the server accepts a step of this key press. The first step
-    // may pass the last confirmed tile: the key arrives after that step started.
-    private bool _opening;
+    private bool _stepConfirmed = true;
+    private bool _holding;
+    private bool _waitingAtEnd;
     private TimeSpan _releaseAt;
+    private TimeSpan _waitFrom;
     private float _cardinalPeriod;
     private bool _hasStepSample;
     private TimeSpan _lastStepAt;
@@ -90,10 +90,8 @@ public sealed partial class AtomGlideSystem {
     /// actually changes, so a position packet cannot make us hit the same wall.
     /// </summary>
     private void ApplyHeldDirection(Vector2 dir) {
-        if (dir != _moveDir && dir != Vector2.Zero) {
+        if (dir != _moveDir && dir != Vector2.Zero)
             _blocked = false;
-            _opening = true;
-        }
 
         _moveDir = dir;
     }
@@ -103,106 +101,197 @@ public sealed partial class AtomGlideSystem {
             return;
 
         var held = _moveDir != Vector2.Zero && !_blocked && _ui.KeyboardFocused == null;
-        if (held) {
-            if (!_steering)
-                _opening = true;
-
-            var glide = FindGlide(uid);
-            if (glide != null) {
-                _visual = VisualPosition(glide, now);
-                _currentGlides.Remove(glide);
-            } else if (!_ownVisual) {
-                _visual = xform.LocalPosition;
+        var glide = FindGlide(uid);
+        if (!held) {
+            if (_steering) {
+                _steering = false;
+                _releaseAt = now;
             }
 
+            // The step has not been accepted yet. Stop where the key came up
+            // and give the server one tick to agree before giving the pixels back.
+            if (glide is { Predicted: true } && !_stepConfirmed) {
+                _visualHold = VisualPosition(glide, now);
+                _currentGlides.Remove(glide);
+                Place(uid, xform, _visualHold);
+                _holding = true;
+                glide = null;
+            }
+
+            if (_holding) {
+                if (_stepConfirmed) {
+                    _holding = false;
+                    if ((_visualHold - _confirmed).LengthSquared() > 0.01f)
+                        BeginGlide(uid, xform, sprite, _visualHold, _confirmed, false, now);
+                    return;
+                }
+
+                if ((now - _releaseAt).TotalSeconds < 0.08f) {
+                    Place(uid, xform, _visualHold);
+                    return;
+                }
+
+                _holding = false;
+                if ((_visualHold - _confirmed).LengthSquared() > 0.01f)
+                    BeginGlide(uid, xform, sprite, _visualHold, _confirmed, false, now);
+            }
+
+            return;
+        }
+
+        if (!_steering) {
+            _steering = true;
+            _stepConfirmed = true;
+            _waitingAtEnd = false;
             if (!_hasConfirmed) {
-                _confirmed = TileOf(_visual);
+                _confirmed = TileOf(xform.LocalPosition);
                 _hasConfirmed = true;
             }
+        }
 
-            _steering = true;
-            _ownVisual = true;
-            _steerDir = _moveDir;
-            Steer(uid, xform, sprite, now, frameTime);
+        if (glide is { Predicted: true } && !SameDir(glide.EndPos - glide.StartPos, _moveDir)) {
+            var visual = VisualPosition(glide, now);
+            _currentGlides.Remove(glide);
+            Place(uid, xform, visual);
+            glide = null;
+            _stepConfirmed = true;
+            _waitingAtEnd = false;
+        }
+
+        if (glide != null)
+            return;
+
+        if (!_stepConfirmed) {
+            if (!_waitingAtEnd) {
+                _waitingAtEnd = true;
+                _waitFrom = now;
+            }
+
+            // Still the tile the glide already finished. A late accept continues;
+            // a wall does not, and only then do we step back.
+            if ((now - _waitFrom).TotalSeconds < 0.15f)
+                return;
+
+            var here = xform.LocalPosition;
+            if ((here - _confirmed).LengthSquared() > 0.01f)
+                BeginGlide(uid, xform, sprite, here, _confirmed, false, now);
+            _blocked = true;
+            _stepConfirmed = true;
+            _waitingAtEnd = false;
             return;
         }
 
-        if (_steering) {
+        var destination = _confirmed + _moveDir;
+        BeginGlide(uid, xform, sprite, xform.LocalPosition, destination, true, now);
+        _steerDir = _moveDir;
+        _stepConfirmed = false;
+        _waitingAtEnd = false;
+    }
+
+    /// <summary>
+    /// The local mob already started this step when the key went down.
+    /// A server position on that same step must not replay it from the tile behind.
+    /// </summary>
+    private bool HandleLocalMove(EntityUid uid, TransformComponent xform, DMISpriteComponent sprite, Glide? glide, Vector2 to, TimeSpan now) {
+        var predicting = _steering || _holding || glide is { Predicted: true };
+        if (!predicting)
+            return false;
+
+        var visual = glide != null ? VisualPosition(glide, now) : _holding ? _visualHold : xform.LocalPosition;
+        if ((to - visual).Length() > 2f) {
+            if (glide != null)
+                _currentGlides.Remove(glide);
+            _holding = false;
             _steering = false;
-            _releaseAt = now;
+            _waitingAtEnd = false;
+            _stepConfirmed = true;
+            _hasConfirmed = false;
+            return false;
         }
 
-        if (FindGlide(uid) != null)
-            return;
-        if (_ownVisual)
-            Settle(uid, xform, sprite, now);
+        var dir = _moveDir != Vector2.Zero ? _moveDir : _steerDir;
+        if (dir == Vector2.Zero)
+            return false;
+
+        if (!OnWalk(_confirmed, to)) {
+            if (Vector2.Dot(to - visual, dir) <= 0.05f) {
+                Place(uid, xform, visual);
+                return true;
+            }
+
+            if (glide != null)
+                _currentGlides.Remove(glide);
+            _holding = false;
+            _steering = false;
+            _stepConfirmed = true;
+            _waitingAtEnd = false;
+            _confirmed = to;
+            _hasConfirmed = true;
+            BeginGlide(uid, xform, sprite, visual, to, false, now);
+            Place(uid, xform, visual);
+            return true;
+        }
+
+        var end = _confirmed + dir;
+        var reachedStep = (to - end).LengthSquared() < 0.16f || glide != null && (to - glide.EndPos).LengthSquared() < 0.16f;
+        if (reachedStep) {
+            var previous = _confirmed;
+            _confirmed = to;
+            _hasConfirmed = true;
+            _stepConfirmed = true;
+            _waitingAtEnd = false;
+            RememberCardinal(previous, to, now);
+        } else if (_moveDir != Vector2.Zero && glide != null && SameDir(dir, to - glide.EndPos) && (to - glide.EndPos).LengthSquared() > 0.25f) {
+            var previous = _confirmed;
+            _confirmed = to;
+            _hasConfirmed = true;
+            _stepConfirmed = true;
+            _waitingAtEnd = false;
+            RememberCardinal(previous, to, now);
+            var speed = Math.Max(WalkSpeed(sprite, dir), 0.01f);
+            glide.StartPos = visual;
+            glide.EndPos = to;
+            glide.StartTime = now;
+            glide.Duration = Math.Max((to - visual).Length() / speed, 0.04f);
+            Place(uid, xform, visual);
+            return true;
+        }
+
+        if (glide is { Predicted: true }) {
+            Place(uid, xform, visual);
+            return true;
+        }
+
+        if (_holding) {
+            _holding = false;
+            _confirmed = to;
+            _hasConfirmed = true;
+            _stepConfirmed = true;
+            if ((visual - to).LengthSquared() > 0.01f)
+                BeginGlide(uid, xform, sprite, visual, to, false, now);
+            else
+                Place(uid, xform, to);
+            return true;
+        }
+
+        Place(uid, xform, visual);
+        return true;
     }
 
-    /// <summary>
-    /// Walk at a constant speed. Releasing the key stops this immediately.
-    /// Until the server accepts a step, the sprite may enter the tile after the
-    /// next one. Stopping on the first tile is the hitch at the start of a walk:
-    /// that tile finishes before the key comes back as a move. A cap behind the
-    /// sprite is not walked toward.
-    /// </summary>
-    private void Steer(EntityUid uid, TransformComponent xform, DMISpriteComponent sprite, TimeSpan now, float frameTime) {
-        var cap = _confirmed + _moveDir * (_opening ? 2f : 1f);
-        var delta = cap - _visual;
-        if (Vector2.Dot(delta, _moveDir) <= 0.001f) {
-            Place(uid, xform, _visual);
-            return;
-        }
-
-        var distance = delta.Length();
-        var step = Math.Min(WalkSpeed(sprite, _moveDir) * Math.Max(frameTime, 0f), distance);
-        _visual += Vector2.Normalize(delta) * step;
-        Place(uid, xform, _visual);
-    }
-
-    /// <summary>
-    /// The key is up. Stay where the walk stopped. Catch the server if it is
-    /// already on a further tile, otherwise give back only the distance it never took.
-    /// </summary>
-    private void Settle(EntityUid uid, TransformComponent xform, DMISpriteComponent sprite, TimeSpan now) {
-        if ((_visual - _confirmed).LengthSquared() <= 0.0004f) {
-            _visual = _confirmed;
-            Place(uid, xform, _visual);
-            _ownVisual = false;
-            return;
-        }
-
-        var ahead = _steerDir == Vector2.Zero
-            ? (_visual - _confirmed).Length()
-            : Vector2.Dot(_visual - _confirmed, Vector2.Normalize(_steerDir));
-        if (ahead <= 0.02f) {
-            BeginCorrection(uid, xform, sprite, _visual, _confirmed, now);
-            _ownVisual = false;
-            return;
-        }
-
-        if ((now - _releaseAt).TotalSeconds < Math.Max(CardinalDuration(sprite), 0.15f)) {
-            Place(uid, xform, _visual);
-            return;
-        }
-
-        BeginCorrection(uid, xform, sprite, _visual, _confirmed, now);
-        _ownVisual = false;
-    }
-
-    private void BeginCorrection(EntityUid uid, TransformComponent xform, DMISpriteComponent sprite, Vector2 from, Vector2 to, TimeSpan now) {
+    private void BeginGlide(EntityUid uid, TransformComponent xform, DMISpriteComponent sprite, Vector2 from, Vector2 to, bool predicted, TimeSpan now) {
         var distance = (to - from).Length();
         if (distance < 0.001f) {
             Place(uid, xform, to);
             return;
         }
 
-        var speed = WalkSpeed(sprite, _steerDir == Vector2.Zero ? to - from : _steerDir);
+        var speed = Math.Max(WalkSpeed(sprite, to - from), 0.01f);
         _currentGlides.Add(new Glide(uid, xform, sprite) {
             StartPos = from,
             EndPos = to,
             StartTime = now,
-            Duration = Math.Max(distance / Math.Max(speed, 0.01f), 0.04f),
-            Predicted = false
+            Duration = Math.Max(distance / speed, 0.04f),
+            Predicted = predicted
         });
     }
 
@@ -276,19 +365,6 @@ public sealed partial class AtomGlideSystem {
         if (step.LengthSquared() < 0.0001f || dir.LengthSquared() < 0.0001f)
             return false;
         return Vector2.Dot(Vector2.Normalize(step), Vector2.Normalize(dir)) > 0.9f;
-    }
-
-    private void NoteServerMove(EntityUid uid, Vector2 position, TimeSpan now) {
-        if (!IsLocal(uid))
-            return;
-
-        var previous = _hasConfirmed ? _confirmed : position;
-        _confirmed = position;
-        _hasConfirmed = true;
-        var stepDelta = position - previous;
-        if (stepDelta.LengthSquared() > 0.25f && (_moveDir == Vector2.Zero || SameDir(stepDelta, _moveDir)))
-            _opening = false;
-        RememberCardinal(previous, position, now);
     }
 
     /// <summary>

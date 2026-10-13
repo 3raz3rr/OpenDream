@@ -1,6 +1,7 @@
 using OpenDreamRuntime.Procs;
 using OpenDreamRuntime.Rendering;
 using OpenDreamShared.Dream;
+using OpenDreamShared.Network.Messages;
 using Robust.Shared.Map;
 
 namespace OpenDreamRuntime.Objects.Types;
@@ -210,6 +211,7 @@ public class DreamObjectMovable : DreamObjectAtom {
             case DreamObjectTurf turf:
                 TransformSystem.SetParent(Entity, DreamMapManager.GetZLevelEntity(turf.Z));
                 TransformSystem.SetWorldPosition(Entity, new Vector2(turf.X, turf.Y));
+                NotifyOwnerStep(oldLoc, turf);
 
                 turf.Cell.Movables.Add(this);
                 if (oldLoc is null)
@@ -229,6 +231,27 @@ public class DreamObjectMovable : DreamObjectAtom {
             default:
                 throw new ArgumentException($"Invalid loc {loc}");
         }
+    }
+
+    /// <summary>
+    /// The player's own step, on the tick it happens. The replicated transform
+    /// arrives later; the glide should already be running by then.
+    /// </summary>
+    private void NotifyOwnerStep(DreamObjectAtom? oldLoc, DreamObjectTurf turf) {
+        if (this is not DreamObjectMob player || player.Connection?.Session is not { } session)
+            return;
+        if (oldLoc is not DreamObjectTurf old || old.Z != turf.Z)
+            return;
+        if (old.X == turf.X && old.Y == turf.Y)
+            return;
+
+        var glide = AtomManager.TryGetAppearance(this, out var appearance) ? appearance.GlideSize : 0f;
+        session.Channel.SendMessage(new MsgMobStep {
+            X = turf.X,
+            Y = turf.Y,
+            GlideSize = glide,
+            Sequence = player.TakeStepSequence()
+        });
     }
 
     private void SetScreenLoc(string? screenLoc) {

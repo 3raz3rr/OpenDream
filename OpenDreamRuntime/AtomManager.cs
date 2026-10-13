@@ -531,7 +531,10 @@ public sealed partial class AtomManager {
         if (atom is DreamObjectTurf turf) {
             _dreamMapManager.SetTurfAppearance(turf, appearance);
         } else if (atom is DreamObjectMovable movable) {
+            var previousDirection = movable.SpriteComponent.Appearance?.Direction;
             DMISpriteSystem?.SetSpriteAppearance(new(movable.Entity, movable.SpriteComponent), appearance);
+            if (atom is DreamObjectMob player && previousDirection != appearance.Direction)
+                player.NotifyFacing(appearance.Direction);
         } else if (atom is DreamObjectArea area) {
             _dreamMapManager.SetAreaAppearance(area, appearance);
         }

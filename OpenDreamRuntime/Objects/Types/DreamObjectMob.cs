@@ -1,4 +1,6 @@
 ﻿using OpenDreamRuntime.Procs.Native;
+using OpenDreamShared.Dream;
+using OpenDreamShared.Network.Messages;
 using OpenDreamShared.Rendering;
 
 namespace OpenDreamRuntime.Objects.Types;
@@ -27,6 +29,24 @@ public sealed class DreamObjectMob : DreamObjectMovable {
     }
 
     private readonly DreamMobSightComponent _sightComponent;
+    private int _stepSequence;
+
+    /// <summary>
+    /// Next id for a tile this mob actually stepped onto. The client drops older snapshots.
+    /// </summary>
+    public int TakeStepSequence() => ++_stepSequence;
+
+    /// <summary>
+    /// Dir just changed. The owning client turns before the appearance snapshot.
+    /// </summary>
+    public void NotifyFacing(AtomDirection direction) {
+        if (Connection?.Session is not { } session)
+            return;
+
+        session.Channel.SendMessage(new MsgMobFacing {
+            Dir = (byte)direction
+        });
+    }
 
     public DreamObjectMob(DreamObjectDefinition objectDefinition) : base(objectDefinition) {
         _sightComponent = EntityManager.AddComponent<DreamMobSightComponent>(Entity);

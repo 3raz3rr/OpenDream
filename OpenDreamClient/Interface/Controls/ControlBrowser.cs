@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -71,6 +71,7 @@ internal sealed partial class ControlBrowser : InterfaceControl {
             if (_screen != null) {
                 _screen.Root.HorizontalExpand = true;
                 _screen.Root.VerticalExpand = true;
+                _screen.Root.Orphan();
                 _panel.AddChild(_screen.Root);
             }
         }
