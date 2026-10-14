@@ -224,6 +224,14 @@ internal sealed class DocumentView : Control {
                 return MakeLog(node);
             case "command":
                 return MakeCommand(node);
+            case "tabs":
+                return MakeTabs(node);
+            case "grid":
+                return MakeGrid(node);
+            case "chip":
+                return MakeChip(node);
+            case "row":
+                return MakeRow(node);
             default:
                 return MakeLabel(node.Type, node, 13, new Color(1f, 0.75f, 0.4f, 0.8f));
         }
@@ -334,6 +342,7 @@ internal sealed class DocumentView : Control {
             MinSize = new Vector2(0, 28),
             PlaceHolder = node.Attr.GetValueOrDefault("hint")
         };
+        input.AddStyleClass("NativeField");
         input.OnTextEntered += args => {
             var text = args.Text.Replace('"', '\'');
             input.Clear();
@@ -406,6 +415,180 @@ internal sealed class DocumentView : Control {
             Fire(href + glue + "value=" + encoded);
         };
         return input;
+    }
+
+    private Control MakeTabs(DocNode node) {
+        var wrap = new WrapContainer {
+            HorizontalExpand = true,
+            SeparationOverride = 2,
+            CrossSeparationOverride = 0
+        };
+        var accent = Color.FromHex("#5EEAD4");
+        foreach (var child in node.Children) {
+            if (child.Type != "tab")
+                continue;
+
+            var on = child.Attr.GetValueOrDefault("on") == "1";
+            var button = new Button {
+                Text = child.Attr.GetValueOrDefault("text") ?? "",
+                MinSize = new Vector2(48, 24),
+                Margin = new Thickness(1, 1, 1, 0),
+                TextAlign = Label.AlignMode.Center,
+                ClipText = true
+            };
+            button.Label.FontOverride = NativeFonts.Ui(12);
+            button.Label.FontColorOverride = on ? Color.White : new Color(1f, 1f, 1f, 0.62f);
+            var wash = new Color(0.37f, 0.92f, 0.83f, on ? 0.16f : 0f);
+            button.StyleBoxOverride = new StyleBoxFlat(wash) {
+                BorderColor = on ? accent : Color.Transparent,
+                BorderThickness = new Thickness(0, 0, 0, 2),
+                ContentMarginLeftOverride = 8,
+                ContentMarginRightOverride = 8,
+                ContentMarginTopOverride = 3,
+                ContentMarginBottomOverride = 1
+            };
+            var href = child.Attr.GetValueOrDefault("href");
+            var cmd = child.Attr.GetValueOrDefault("cmd");
+            button.OnPressed += _ => Activate(href, cmd);
+            wrap.AddChild(button);
+        }
+
+        return new PanelContainer {
+            HorizontalExpand = true,
+            Margin = new Thickness(0, 0, 0, 2),
+            PanelOverride = new StyleBoxFlat(Color.FromHex("#0E1218")) {
+                BorderColor = new Color(1f, 1f, 1f, 0.12f),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                ContentMarginLeftOverride = 4,
+                ContentMarginRightOverride = 4,
+                ContentMarginTopOverride = 2,
+                ContentMarginBottomOverride = 0
+            },
+            Children = { wrap }
+        };
+    }
+
+    private Control MakeGrid(DocNode node) {
+        var grid = new GridContainer {
+            Columns = Math.Max(1, NativeDoc.IntOf(node, "cols", 2)),
+            HorizontalExpand = true
+        };
+        foreach (var child in node.Children)
+            grid.AddChild(Build(child, verticalParent: false));
+        return grid;
+    }
+
+    private Control MakeChip(DocNode node) {
+        var button = new Button {
+            Text = node.Attr.GetValueOrDefault("text") ?? "",
+            HorizontalExpand = true,
+            MinSize = new Vector2(0, 26),
+            Margin = new Thickness(2, 2, 2, 2),
+            TextAlign = Label.AlignMode.Left,
+            ClipText = true
+        };
+        button.Label.FontOverride = NativeFonts.Ui(13);
+        button.Label.FontColorOverride = new Color(0.86f, 0.89f, 0.93f);
+        button.StyleBoxOverride = new StyleBoxFlat(Color.Transparent) {
+            ContentMarginLeftOverride = 6,
+            ContentMarginRightOverride = 6,
+            ContentMarginTopOverride = 2,
+            ContentMarginBottomOverride = 2
+        };
+        button.OnPressed += _ => Activate(node.Attr.GetValueOrDefault("href"), node.Attr.GetValueOrDefault("cmd"));
+        return button;
+    }
+
+    /// <summary>
+    /// One status line. text is the left side. value is the right side.
+    /// href or cmd makes that value clickable. act children are extra clicks on the same line.
+    /// </summary>
+    private Control MakeRow(DocNode node) {
+        var row = new BoxContainer {
+            Orientation = BoxContainer.LayoutOrientation.Horizontal,
+            HorizontalExpand = true,
+            Margin = new Thickness(0, 1, 0, 1)
+        };
+        var text = node.Attr.GetValueOrDefault("text") ?? "";
+        var value = node.Attr.GetValueOrDefault("value");
+        var href = node.Attr.GetValueOrDefault("href");
+        var cmd = node.Attr.GetValueOrDefault("cmd");
+        var ink = NativeDoc.ColorOf(node.Attr.GetValueOrDefault("color"), new Color(0.62f, 0.66f, 0.72f));
+
+        if (text.Length == 0 && string.IsNullOrEmpty(value) && node.Children.Count == 0) {
+            row.AddChild(new Control { MinSize = new Vector2(0, 8), HorizontalExpand = true });
+            return row;
+        }
+
+        if (!string.IsNullOrEmpty(cmd) || !string.IsNullOrEmpty(href)) {
+            if (string.IsNullOrEmpty(value)) {
+                row.AddChild(MakeRowAction(text, href, cmd, expand: true));
+                foreach (var child in node.Children)
+                    AddRowAct(row, child);
+                return row;
+            }
+        }
+
+        row.AddChild(new Label {
+            Text = text,
+            FontOverride = NativeFonts.Ui(14),
+            FontColorOverride = ink,
+            HorizontalExpand = true
+        });
+        if (!string.IsNullOrEmpty(value))
+            row.AddChild(MakeRowAction(value, href, cmd, expand: false));
+        foreach (var child in node.Children)
+            AddRowAct(row, child);
+        return row;
+    }
+
+    private void AddRowAct(BoxContainer row, DocNode child) {
+        if (child.Type != "act")
+            return;
+
+        row.AddChild(MakeRowAction(
+            child.Attr.GetValueOrDefault("text") ?? "",
+            child.Attr.GetValueOrDefault("href"),
+            child.Attr.GetValueOrDefault("cmd"),
+            expand: false));
+    }
+
+    private Control MakeRowAction(string label, string? href, string? cmd, bool expand) {
+        if (string.IsNullOrEmpty(href) && string.IsNullOrEmpty(cmd)) {
+            return new Label {
+                Text = label,
+                FontOverride = NativeFonts.Ui(14),
+                FontColorOverride = new Color(0.65f, 0.78f, 0.95f),
+                HorizontalExpand = expand
+            };
+        }
+
+        var button = new Button {
+            Text = label,
+            MinSize = new Vector2(0, 20),
+            HorizontalExpand = expand,
+            TextAlign = expand ? Label.AlignMode.Left : Label.AlignMode.Right,
+            ClipText = true
+        };
+        button.Label.FontOverride = NativeFonts.Ui(14);
+        button.Label.FontColorOverride = new Color(0.55f, 0.78f, 1f);
+        button.StyleBoxOverride = new StyleBoxFlat(Color.Transparent) {
+            ContentMarginLeftOverride = expand ? 0 : 8,
+            ContentMarginRightOverride = 0,
+            ContentMarginTopOverride = 0,
+            ContentMarginBottomOverride = 0
+        };
+        button.OnPressed += _ => Activate(href, cmd);
+        return button;
+    }
+
+    private void Activate(string? href, string? cmd) {
+        if (!string.IsNullOrEmpty(cmd)) {
+            _runCommand?.Invoke(cmd);
+            return;
+        }
+
+        Fire(href);
     }
 
     private void Fire(string? href) {

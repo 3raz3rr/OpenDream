@@ -65,10 +65,13 @@ public sealed partial class ServerAppearanceSystem : SharedAppearanceSystem {
     public override void Update(float frameTime) {
         lock (_lock) {
             if (_appearanceSendQueue.Count > 0) {
-                using var compressed = MsgAllAppearances.CompressAppearances(_appearanceSendQueue, _appearanceSendQueue.Count, _serializer);
+                // Same bound as a join batch. A spawn that creates a lot of icons
+                // otherwise compresses the whole queue inside this one update.
+                var count = Math.Min(_appearanceSendQueue.Count, MsgAllAppearances.JoinBatchCount);
+                using var compressed = MsgAllAppearances.CompressAppearances(_appearanceSendQueue.GetRange(0, count), count, _serializer);
 
                 RaiseNetworkEvent(new NewAppearancesEvent(compressed.ToArray()));
-                _appearanceSendQueue.Clear();
+                _appearanceSendQueue.RemoveRange(0, count);
             }
 
             SendJoinBatches();

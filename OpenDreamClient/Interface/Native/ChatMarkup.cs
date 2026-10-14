@@ -1,42 +1,96 @@
+using System;
+using System.Collections.Generic;
 using Robust.Shared.Maths;
 using Robust.Shared.Utility;
 
 namespace OpenDreamClient.Interface.Native;
 
 /// <summary>
-/// The station chat stylesheet, reduced to the colors the log can draw.
-/// Span classes such as notice and danger become real text color.
+/// Station chat colors from the panel stylesheet. A span's class sets the ink, and bold or italic when that class uses them.
 /// </summary>
 internal static class ChatMarkup {
-    private static readonly Color Ink = new(0.86f, 0.89f, 0.92f);
+    private static readonly Color Ink = Color.FromHex("#B3CCE6");
+    private static readonly Color Danger = Color.FromHex("#C51E1E");
+    private static readonly Color Notice = Color.FromHex("#6685F5");
+    private static readonly Color Green = Color.FromHex("#059223");
 
     private static readonly Dictionary<string, Color> Colors = new(StringComparer.OrdinalIgnoreCase) {
-        ["notice"] = Color.FromHex("#8AA4F5"),
-        ["boldnotice"] = Color.FromHex("#8AA4F5"),
-        ["smallnotice"] = Color.FromHex("#8AA4F5"),
-        ["tinynotice"] = Color.FromHex("#8AA4F5"),
-        ["info"] = Color.FromHex("#9BB6FF"),
-        ["admin"] = Color.FromHex("#6A8FD4"),
-        ["danger"] = Color.FromHex("#C4453C"),
-        ["bolddanger"] = Color.FromHex("#C4453C"),
-        ["userdanger"] = Color.FromHex("#E05048"),
-        ["warning"] = Color.FromHex("#C4453C"),
-        ["boldwarning"] = Color.FromHex("#C4453C"),
-        ["announce"] = Color.FromHex("#C4453C"),
-        ["boldannounce"] = Color.FromHex("#C4453C"),
-        ["deadsay"] = Color.FromHex("#E4B3FF"),
-        ["radio"] = Color.FromHex("#2EBF55"),
-        ["ooc"] = Color.FromHex("#CC9900"),
-        ["emote"] = Color.FromHex("#C8C8C8"),
-        ["green"] = Color.FromHex("#3DCC5C"),
-        ["nicegreen"] = Color.FromHex("#3DCC5C"),
-        ["rose"] = Color.FromHex("#FF6B8A"),
+        ["ooc"] = Color.FromHex("#CCA300"),
+        ["looc"] = Color.FromHex("#D8B555"),
+        ["rlooc"] = Color.FromHex("#B09448"),
+        ["adminobserverooc"] = Color.FromHex("#0099CC"),
+        ["adminooc"] = Color.FromHex("#3D5BC3"),
+        ["adminsay"] = Color.FromHex("#FF4500"),
+        ["admin"] = Color.FromHex("#5975DA"),
+        ["adminhelp"] = Color.FromHex("#FF0000"),
+        ["deadsay"] = Color.FromHex("#E2C1FF"),
+        ["binarysay"] = Color.FromHex("#1E90FF"),
+        ["radio"] = Color.FromHex("#1ECC43"),
+        ["sciradio"] = Color.FromHex("#C68CFA"),
+        ["comradio"] = Color.FromHex("#FCDF03"),
+        ["secradio"] = Color.FromHex("#DD3535"),
+        ["medradio"] = Color.FromHex("#57B8F0"),
+        ["engradio"] = Color.FromHex("#F37746"),
+        ["suppradio"] = Color.FromHex("#B88646"),
+        ["servradio"] = Color.FromHex("#6CA729"),
+        ["enteradio"] = Color.FromHex("#79C5A8"),
+        ["newscaster"] = Color.FromHex("#79C5A8"),
+        ["syndradio"] = Color.FromHex("#8F4A4B"),
+        ["gangradio"] = Color.FromHex("#AC2EA1"),
+        ["centcomradio"] = Color.FromHex("#2681A5"),
+        ["aiprivradio"] = Color.FromHex("#D65D95"),
+        ["alert"] = Color.FromHex("#D82020"),
+        ["danger"] = Danger,
+        ["bolddanger"] = Danger,
+        ["userdanger"] = Danger,
+        ["warning"] = Danger,
+        ["boldwarning"] = Danger,
+        ["announce"] = Danger,
+        ["boldannounce"] = Danger,
+        ["minorannounce"] = Danger,
+        ["alertsyndie"] = Color.FromHex("#FF0000"),
+        ["minoralert"] = Color.FromHex("#A4BAD6"),
+        ["priorityannounce"] = Color.FromHex("#A4BAD6"),
+        ["prioritytitle"] = Notice,
+        ["notice"] = Notice,
+        ["boldnotice"] = Notice,
+        ["smallnotice"] = Notice,
+        ["tinynotice"] = Notice,
+        ["adminnotice"] = Notice,
+        ["hear"] = Notice,
+        ["info"] = Color.FromHex("#9AB0FF"),
+        ["green"] = Green,
+        ["nicegreen"] = Green,
+        ["boldnicegreen"] = Green,
+        ["greenannounce"] = Green,
+        ["rose"] = Color.FromHex("#FF5050"),
+        ["red"] = Color.FromHex("#FF0000"),
+        ["blue"] = Color.FromHex("#215CFF"),
+        ["grey"] = Color.FromHex("#838383"),
+        ["cult"] = Color.FromHex("#973E3B"),
+        ["ghostalert"] = Color.FromHex("#6600FF"),
+        ["alien"] = Color.FromHex("#855D85"),
+        ["resonate"] = Color.FromHex("#298F85"),
+        ["mentor"] = Color.FromHex("#8A2BE2"),
+        ["subtle"] = Color.FromHex("#ABC6EC"),
+        ["subtler"] = Color.FromHex("#E2C1FF"),
         ["link"] = Color.FromHex("#8EC5FF"),
+        ["unconscious"] = Color.FromHex("#A4BAD6")
+    };
+
+    private static readonly HashSet<string> Bold = new(StringComparer.OrdinalIgnoreCase) {
+        "bold", "name", "prefix", "ooc", "looc", "adminooc", "admin", "adminsay", "adminobserverooc",
+        "yell", "userdanger", "bolddanger", "announce", "boldannounce", "minorannounce", "priorityannounce",
+        "prioritytitle", "boldnotice", "adminhelp", "greenannounce", "boldnicegreen", "ghostalert", "medal"
+    };
+
+    private static readonly HashSet<string> Italic = new(StringComparer.OrdinalIgnoreCase) {
+        "italic", "italics", "warning", "boldwarning", "hear", "suicide", "changeling", "ghostalert"
     };
 
     public static void Append(FormattedMessage message, string html) {
         message.PushColor(Ink);
-        var pops = new Stack<bool>();
+        var pops = new Stack<int>();
         var index = 0;
         while (index < html.Length) {
             var mark = html.IndexOfAny(new[] { '<', '&' }, index);
@@ -70,20 +124,23 @@ internal static class ChatMarkup {
         }
 
         while (pops.Count > 0) {
-            if (pops.Pop())
+            var count = pops.Pop();
+            for (var i = 0; i < count; i++)
                 message.Pop();
         }
 
         message.Pop();
     }
 
-    private static void ApplyTag(FormattedMessage message, string tag, Stack<bool> pops) {
+    private static void ApplyTag(FormattedMessage message, string tag, Stack<int> pops) {
         var body = tag.Trim();
         if (body.Length == 0)
             return;
 
         if (body.StartsWith('/')) {
-            if (pops.Count > 0 && pops.Pop())
+            if (!pops.TryPop(out var count))
+                return;
+            for (var i = 0; i < count; i++)
                 message.Pop();
             return;
         }
@@ -100,35 +157,49 @@ internal static class ChatMarkup {
         if (name is "img" or "!--")
             return;
 
-        var color = ClassColor(body) ?? (name == "a" ? Colors["link"] : (Color?)null);
-        if (color == null) {
-            pops.Push(false);
-            return;
+        var tokens = Classes(body);
+        Color? color = name == "a" ? Colors["link"] : null;
+        var bold = name is "b" or "strong" or "em";
+        var italic = name is "i";
+        foreach (var token in tokens) {
+            if (color == null && Colors.TryGetValue(token, out var found))
+                color = found;
+            if (Bold.Contains(token))
+                bold = true;
+            if (Italic.Contains(token))
+                italic = true;
         }
 
-        message.PushColor(color.Value);
-        pops.Push(true);
+        var pushed = 0;
+        if (color != null) {
+            message.PushColor(color.Value);
+            pushed++;
+        }
+        if (bold) {
+            message.PushTag(new MarkupNode("bold", null, null));
+            pushed++;
+        }
+        if (italic) {
+            message.PushTag(new MarkupNode("italic", null, null));
+            pushed++;
+        }
+        pops.Push(pushed);
     }
 
-    private static Color? ClassColor(string tag) {
+    private static string[] Classes(string tag) {
         var at = tag.IndexOf("class", StringComparison.OrdinalIgnoreCase);
         if (at < 0)
-            return null;
+            return Array.Empty<string>();
 
         var quote = tag.IndexOfAny(new[] { '\'', '"' }, at);
         if (quote < 0)
-            return null;
+            return Array.Empty<string>();
 
         var end = tag.IndexOf(tag[quote], quote + 1);
         if (end < 0)
-            return null;
+            return Array.Empty<string>();
 
-        foreach (var token in tag[(quote + 1)..end].Split(' ', StringSplitOptions.RemoveEmptyEntries)) {
-            if (Colors.TryGetValue(token, out var color))
-                return color;
-        }
-
-        return null;
+        return tag[(quote + 1)..end].Split(' ', StringSplitOptions.RemoveEmptyEntries);
     }
 
     private static string Entity(string name) {

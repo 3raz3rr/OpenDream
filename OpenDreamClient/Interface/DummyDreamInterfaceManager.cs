@@ -28,6 +28,12 @@ public sealed partial class DummyDreamInterfaceManager : IDreamInterfaceManager 
         _netManager.RegisterNetMessage<MsgLoadInterface>(_ => _netManager.ClientSendMessage(new MsgAckLoadInterface()));
     }
 
+    public void NoteLobbyReady() {
+    }
+
+    public void NoteAppearancesReady() {
+    }
+
     public void FrameUpdate(FrameEventArgs frameEventArgs) {
     }
 

@@ -171,7 +171,9 @@ public sealed partial class DreamObjectWorld : DreamObject {
                 return true;
 
             case "realtime":
-                value = new DreamValue((DateTime.Now - new DateTime(2000, 1, 1)).Milliseconds / 100);
+                // Deciseconds since 2000-01-01 00:00:00 GMT. .Milliseconds is only the 0-999 fragment.
+                var realtimeEpoch = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                value = new DreamValue((DateTime.UtcNow - realtimeEpoch).TotalMilliseconds / 100.0);
                 return true;
 
             case "tick_usage":

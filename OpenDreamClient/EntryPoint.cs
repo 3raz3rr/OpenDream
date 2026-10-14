@@ -150,5 +150,6 @@ public sealed partial class EntryPoint : GameClient {
         }
 
         clientAppearanceSystem.CompleteInitialAppearances();
+        _dreamInterface.NoteAppearancesReady();
     }
 }

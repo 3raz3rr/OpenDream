@@ -192,7 +192,7 @@ public static class DreamStylesheet {
 
             Element<LineEdit>().Class("NativeField")
                 .Prop(LineEdit.StylePropertyStyleBox, new StyleBoxFlat {
-                    BackgroundColor = Color.FromHex("#12151c"),
+                    BackgroundColor = Color.FromHex("#151515"),
                     BorderThickness = new Thickness(1),
                     BorderColor = new Color(1f, 1f, 1f, 0.13f),
                     ContentMarginLeftOverride = 8,

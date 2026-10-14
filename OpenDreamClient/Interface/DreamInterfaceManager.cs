@@ -61,6 +61,11 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     private Dictionary<WindowId, ControlWindow> ClydeWindowIdToControl { get; } = new();
     public CursorHolder Cursors { get; private set; } = default!;
     private int _browseFileId;
+    private LoadingOverlay? _loading;
+
+    public void NoteLobbyReady() => _loading?.Dismiss();
+
+    public void NoteAppearancesReady() => _loading?.AppearancesFinished();
 
     public ViewRange View {
         get => _view;
@@ -120,7 +125,8 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
     public void Initialize() {
         _nativeHost = new NativeInterfaceHost(
             command => RunCommand(command),
-            query => _netManager.ClientSendMessage(new MsgTopic { Query = query }));
+            query => _netManager.ClientSendMessage(new MsgTopic { Query = query }),
+            NoteLobbyReady);
 
         SetupBaseDreamBinds();
 
@@ -1222,6 +1228,11 @@ internal sealed partial class DreamInterfaceManager : IDreamInterfaceManager {
 
         _uiManager.StateRoot.AddChild(DefaultWindow.UIElement);
 
+        _loading = new LoadingOverlay();
+        LayoutContainer.SetAnchorRight(_loading, 1);
+        LayoutContainer.SetAnchorBottom(_loading, 1);
+        _uiManager.StateRoot.AddChild(_loading);
+
         if (DefaultWindow.GetClydeWindow() is { } clydeWindow) {
             ClydeWindowIdToControl.Add(clydeWindow.Id, DefaultWindow);
         }
@@ -1319,6 +1330,8 @@ public interface IDreamInterfaceManager {
     public CursorHolder Cursors { get; }
 
     void Initialize();
+    void NoteLobbyReady();
+    void NoteAppearancesReady();
     void FrameUpdate(FrameEventArgs frameEventArgs);
     InterfaceElement? FindElementWithId(string id);
     void SaveScreenshot(bool openDialog);

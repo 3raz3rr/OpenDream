@@ -45,6 +45,12 @@ public sealed partial class ProcScheduler {
     public void Process() {
         UpdateDelays();
 
+        // One proc still runs to completion. The budget only yields between resumes,
+        // so a tick full of DM work cannot run on without the engine getting a turn.
+        var budgetMs = Math.Max(1L, (long)(_gameTiming.TickPeriod.TotalMilliseconds * 0.8));
+        var start = Environment.TickCount64;
+        var ran = false;
+
         // Update all asynchronous tasks that have finished waiting and are ready to resume.
         //
         // Note that this is in a loop with _deferredTasks.
@@ -52,12 +58,24 @@ public sealed partial class ProcScheduler {
         // When we drain the _deferredTasks lists, it'll indirectly schedule things into _scheduled again.
         // This should all happen synchronously (see above).
         while (_scheduled.Count > 0 || _deferredTasks.Count > 0) {
+            if (ran && Environment.TickCount64 - start >= budgetMs)
+                break;
+
             while (_scheduled.TryDequeue(out _current)) {
                 _current.SafeResume();
+                ran = true;
+                if (Environment.TickCount64 - start >= budgetMs)
+                    break;
             }
+
+            if (ran && Environment.TickCount64 - start >= budgetMs)
+                break;
 
             while (_deferredTasks.TryDequeue(out var task)) {
                 task.TrySetResult();
+                ran = true;
+                if (Environment.TickCount64 - start >= budgetMs)
+                    break;
             }
         }
     }

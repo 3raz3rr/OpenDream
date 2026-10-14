@@ -177,20 +177,19 @@ internal static partial class DreamProcNativeHelpers {
     public static DreamList HandleRange(DreamObjectAtom center, ViewRange range, bool includeCenter) {
         HashSet<DreamObjectArea> seenAreas = [];
         DreamList rangeList = center.ObjectDefinition.ObjectTree.CreateList(range.Height * range.Width);
+        var atomManager = IoCManager.Resolve<AtomManager>();
 
         void AddToList(DreamValue value) {
             if(value.TryGetValueAsDreamObject<DreamObjectAtom>(out var atomValue)) {
-                using var appearanceValue = atomValue.GetVariable("appearance");
-                using var appearance = appearanceValue.MustGetValueAsAppearance();
-                if(appearance.Invisibility >= 101)
+                // A movable with no sprite (or an atom whose appearance was never set) must not throw.
+                // Status updates call range() every refresh, and the exception stalled the tick.
+                if (atomManager.TryGetAppearance(atomValue, out var appearance) && appearance.Invisibility >= 101)
                     return;
             }
 
             rangeList.AddValue(value);
-            if(value.TryGetValueAsDreamObject<DreamObjectTurf>(out var turfValue) && !seenAreas.Contains(turfValue.Cell.Area)) {
-                var area = turfValue.Cell.Area;
+            if(value.TryGetValueAsDreamObject<DreamObjectTurf>(out var turfValue) && turfValue.Cell?.Area is { } area && seenAreas.Add(area)) {
                 rangeList.AddValue(new(area));
-                seenAreas.Add(area);
             }
         }
 

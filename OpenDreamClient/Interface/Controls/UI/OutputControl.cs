@@ -16,25 +16,25 @@ public sealed class OutputControl : Control {
     }
 
     private readonly PanelContainer _panelContainer;
+    private readonly ScrollContainer _scroll;
     private readonly BoxContainer _messageContainer;
 
     public OutputControl() {
+        _scroll = new ScrollContainer {
+            HorizontalExpand = true,
+            VerticalExpand = true,
+            HScrollEnabled = false,
+            Children = {
+                (_messageContainer = new BoxContainer {
+                    Orientation = BoxContainer.LayoutOrientation.Vertical,
+                    HorizontalExpand = true
+                })
+            }
+        };
         _panelContainer = new PanelContainer {
             HorizontalExpand = true,
             VerticalExpand = true,
-            Children = {
-                new ScrollContainer {
-                    HorizontalExpand = true,
-                    VerticalExpand = true,
-                    HScrollEnabled = false,
-                    Children = {
-                        (_messageContainer = new BoxContainer {
-                            Orientation = BoxContainer.LayoutOrientation.Vertical,
-                            HorizontalExpand = true
-                        })
-                    }
-                }
-            }
+            Children = { _scroll }
         };
 
         AddChild(_panelContainer);
@@ -42,14 +42,17 @@ public sealed class OutputControl : Control {
     }
 
     public void AddMessage(FormattedMessage message) {
+        var stick = _messageContainer.ChildCount == 0 || _scroll.VScroll >= _scroll.VScrollTarget - 12;
         var label = new RichTextLabel {
             HorizontalExpand = true
         };
 
         label.SetMessage(message);
-        label.Margin = new Thickness(8, 1, 8, 1);
+        label.Margin = new Thickness(6, 0, 6, 0);
         _messageContainer.AddChild(label);
         WrapMessages();
+        if (stick)
+            _scroll.VScrollTarget = float.MaxValue;
     }
 
     public void Clear() {

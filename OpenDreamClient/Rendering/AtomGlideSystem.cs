@@ -35,6 +35,13 @@ public sealed partial class AtomGlideSystem : EntitySystem {
     private bool _hasLocalStep;
     private int _latestStep;
 
+    // A diagonal arrives as two cardinal steps in one burst. Hold the first
+    // until the frame is drawn so the second can replace it with one straight slide.
+    private bool _heldStep;
+    private Vector2 _heldOrigin;
+    private Vector2 _heldDest;
+    private float _heldGlide;
+
     private readonly List<Glide> _currentGlides = new();
     private readonly Dictionary<EntityUid, TimeSpan> _lastMoveAt = new();
 
@@ -67,6 +74,7 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         _transformSystem.Reset();
 
         _ignoreMoveEvent = false;
+        CommitHeldStep();
         var now = _gameTiming.RealTime;
 
         for (int i = 0; i < _currentGlides.Count; i++) {
@@ -100,6 +108,7 @@ public sealed partial class AtomGlideSystem : EntitySystem {
             if (IsLocal(e.Sender)) {
                 NoteLocalMob(e.Sender);
                 _hasLocalStep = false;
+                _heldStep = false;
             }
             return;
         }
@@ -212,56 +221,117 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         var destination = new Vector2(msg.X, msg.Y);
         var now = _gameTiming.RealTime;
         var glide = FindGlide(uid);
-        var speed = CalculateMovementSpeed(_interfaceManager.IconSize, msg.GlideSize);
+        if (glide != null && (glide.EndPos - destination).LengthSquared() < 0.04f) {
+            _localStepEnd = destination;
+            _hasLocalStep = true;
+            _heldStep = false;
+            return;
+        }
+
+        var age = glide != null ? (float)(now - glide.StartTime).TotalSeconds : 0f;
+        // A snapshot may already be on the corner. The side tile of that same step must not pull the sprite off it.
+        if (glide != null && age < 0.05f && IsDiagonalStep(glide.EndPos - glide.StartPos) && IsHalfStep(glide.StartPos, glide.EndPos, destination)) {
+            _localStepEnd = glide.EndPos;
+            _hasLocalStep = true;
+            _heldStep = false;
+            return;
+        }
+
+        // The first half already started a slide this burst. Finish it as one diagonal from where that slide began.
+        if (glide != null && age < 0.05f && IsCardinalStep(glide.EndPos - glide.StartPos) && IsDiagonalStep(destination - glide.StartPos)) {
+            BeginSlide(uid, xform, sprite, glide, glide.StartPos, destination, msg.GlideSize, now);
+            _heldStep = false;
+            return;
+        }
+
+        if (_heldStep && IsDiagonalCompletion(_heldOrigin, _heldDest, destination)) {
+            _heldDest = destination;
+            _heldGlide = msg.GlideSize;
+            return;
+        }
+
+        if (_heldStep)
+            CommitHeldStep();
+
+        _heldOrigin = glide != null ? glide.EndPos : (_hasLocalStep ? _localStepEnd : xform.LocalPosition);
+        _heldDest = destination;
+        _heldGlide = msg.GlideSize;
+        _heldStep = true;
+    }
+
+    /// <summary>
+    /// Draw the step that was waiting for its other half. One diagonal becomes one slide.
+    /// </summary>
+    private void CommitHeldStep() {
+        if (!_heldStep)
+            return;
+        _heldStep = false;
+        if (!TryLocal(out var uid, out var xform, out var sprite))
+            return;
+
+        var destination = _heldDest;
+        var now = _gameTiming.RealTime;
+        var glide = FindGlide(uid);
         if (glide != null && (glide.EndPos - destination).LengthSquared() < 0.04f) {
             _localStepEnd = destination;
             _hasLocalStep = true;
             return;
         }
 
-        // The server splits one diagonal into two cardinal loc changes. The first
-        // of those is not a place to slide to. A snapshot may already be on the
-        // corner; this half-step must not pull the sprite onto the side tile.
-        var age = glide != null ? (float)(now - glide.StartTime).TotalSeconds : 0f;
-        if (glide != null && age < 0.05f && IsDiagonalStep(glide.EndPos - glide.StartPos) && IsHalfStep(glide.StartPos, glide.EndPos, destination)) {
-            if (speed > 0f)
-                glide.Duration = Math.Max(TileTime(glide.StartPos, glide.EndPos, speed), 0.001f);
-            _localStepEnd = glide.EndPos;
-            _hasLocalStep = true;
-            return;
+        var speed = CalculateMovementSpeed(_interfaceManager.IconSize, _heldGlide);
+        Vector2 from;
+        float duration;
+        if (glide != null) {
+            var elapsed = (float)(now - glide.StartTime).TotalSeconds;
+            var remaining = Math.Max(0f, glide.Duration - elapsed);
+            from = VisualPosition(glide, now);
+            var forward = Vector2.Dot(destination - glide.EndPos, glide.EndPos - glide.StartPos);
+            if (forward > 0.0001f && speed > 0f)
+                duration = remaining + TileDistance(glide.EndPos, destination) / speed;
+            else
+                duration = speed > 0f ? TileTime(from, destination, speed) : 0.05f;
+        } else {
+            from = xform.LocalPosition;
+            if ((from - destination).LengthSquared() < 0.04f)
+                from = _heldOrigin;
+            duration = speed > 0f ? TileTime(from, destination, speed) : 0.05f;
         }
 
-        var from = glide != null ? VisualPosition(glide, now) : xform.LocalPosition;
-        // Both halves landed before a frame. Keep the slide straight from where it began.
-        if (glide != null && age < 0.05f && IsCardinalStep(glide.EndPos - glide.StartPos) && IsDiagonalStep(destination - glide.StartPos))
-            from = glide.StartPos;
-
-        var distance = (destination - from).Length();
-        if (distance > 2f) {
+        if (TileDistance(from, destination) > 2.25f) {
             if (glide != null)
                 _currentGlides.Remove(glide);
-            _hasLocalStep = false;
-            return;
-        }
-
-        if (distance < 0.001f) {
+            _ignoreMoveEvent = true;
+            _transformSystem.SetLocalPositionNoLerp(uid, destination, xform);
+            _ignoreMoveEvent = false;
             _localStepEnd = destination;
             _hasLocalStep = true;
             return;
         }
 
-        // A diagonal tile is longer in pixels, but the server spends one step on it.
-        // Euclidean time falls behind and the next pair then throws the sprite.
-        var duration = speed > 0f ? TileTime(from, destination, speed) : 0.05f;
+        BeginSlide(uid, xform, sprite, glide, from, destination, _heldGlide, now, duration);
+    }
+
+    private void BeginSlide(EntityUid uid, TransformComponent xform, DMISpriteComponent sprite, Glide? glide, Vector2 from, Vector2 destination, float glideSize, TimeSpan now, float? duration = null) {
+        if ((destination - from).LengthSquared() < 0.0001f) {
+            _localStepEnd = destination;
+            _hasLocalStep = true;
+            return;
+        }
+
+        var speed = CalculateMovementSpeed(_interfaceManager.IconSize, glideSize);
+        var length = duration ?? (speed > 0f ? TileTime(from, destination, speed) : 0.05f);
         if (glide == null) {
             glide = new Glide(uid, xform, sprite);
             _currentGlides.Add(glide);
         }
 
+        _ignoreMoveEvent = true;
+        _transformSystem.SetLocalPositionNoLerp(uid, from, xform);
+        _ignoreMoveEvent = false;
         glide.StartPos = from;
         glide.EndPos = destination;
         glide.StartTime = now;
-        glide.Duration = Math.Max(duration, 0.001f);
+        glide.Duration = Math.Max(length, 0.001f);
         _localStepEnd = destination;
         _hasLocalStep = true;
         _lastMoveAt[uid] = now;
@@ -290,6 +360,7 @@ public sealed partial class AtomGlideSystem : EntitySystem {
         _stepMob = uid;
         _latestStep = 0;
         _hasLocalStep = false;
+        _heldStep = false;
     }
 
     /// <summary>
@@ -311,6 +382,12 @@ public sealed partial class AtomGlideSystem : EntitySystem {
 
     private static bool IsDiagonalStep(Vector2 delta) {
         return Math.Abs(Math.Abs(delta.X) - 1f) < 0.2f && Math.Abs(Math.Abs(delta.Y) - 1f) < 0.2f;
+    }
+
+    private static bool IsDiagonalCompletion(Vector2 origin, Vector2 first, Vector2 second) {
+        if (!IsCardinalStep(first - origin) || !IsDiagonalStep(second - origin))
+            return false;
+        return IsHalfStep(origin, second, first);
     }
 
     private static bool IsHalfStep(Vector2 start, Vector2 diagonalEnd, Vector2 tile) {

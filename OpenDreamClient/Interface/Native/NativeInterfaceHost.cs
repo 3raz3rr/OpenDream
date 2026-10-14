@@ -11,15 +11,17 @@ internal sealed class NativeInterfaceHost {
     private readonly Dictionary<string, NativePopup> _popups = new();
     private readonly Action<string> _runCommand;
     private readonly Action<string> _sendTopic;
+    private readonly Action? _onLobbyReady;
 
-    public NativeInterfaceHost(Action<string> runCommand, Action<string> sendTopic) {
+    public NativeInterfaceHost(Action<string> runCommand, Action<string> sendTopic, Action? onLobbyReady = null) {
         _runCommand = runCommand;
         _sendTopic = sendTopic;
+        _onLobbyReady = onLobbyReady;
     }
 
     public static bool IsSlot(string? elementId, string? windowId) {
-        return elementId is "title_browser" or "browseroutput" or "statbrowser" or "preferences_browser"
-            || (elementId == "browser" && windowId == "tgui_say");
+        _ = windowId;
+        return elementId is "title_browser" or "preferences_browser" or "browseroutput" or "statbrowser";
     }
 
     /// <summary>
@@ -37,12 +39,18 @@ internal sealed class NativeInterfaceHost {
         if (elementId == "movekeys")
             return true;
 
+        // Chat and the stat panel are drawn here. The payload is the tgui message.
+        if (elementId is "browseroutput" or "statbrowser") {
+            Panel(elementId).ApplyState(value, channel);
+            return true;
+        }
+
         if (channel is "ui" or "patch" or "line" or "clear" or "text") {
             ApplyDocument(elementId, value, channel);
             return true;
         }
 
-        if (elementId is not ("title_browser" or "browseroutput" or "statbrowser" or "preferences_browser"))
+        if (elementId is not ("title_browser" or "preferences_browser"))
             return false;
 
         Panel(elementId).ApplyState(value, channel);
@@ -50,7 +58,7 @@ internal sealed class NativeInterfaceHost {
     }
 
     private static bool IsDocumentSlot(string elementId) {
-        return elementId is "title_browser" or "preferences_browser" or "browseroutput" or "statbrowser";
+        return elementId is "title_browser" or "preferences_browser";
     }
 
     private void ApplyDocument(string elementId, string value, string channel) {
@@ -69,6 +77,8 @@ internal sealed class NativeInterfaceHost {
         switch (channel) {
             case "ui":
                 document.ShowDocument(value);
+                if (elementId == "title_browser")
+                    _onLobbyReady?.Invoke();
                 break;
             case "patch":
                 document.Patch(value);
@@ -117,7 +127,9 @@ internal sealed class NativeInterfaceHost {
             return existing;
 
         NativePanel created = elementId switch {
-            "title_browser" or "browseroutput" or "statbrowser" or "preferences_browser"
+            "browseroutput" => new ChatPanel(elementId, _runCommand, _sendTopic),
+            "statbrowser" => new StatPanel(elementId, _sendTopic, _runCommand),
+            "title_browser" or "preferences_browser"
                 => new DocumentPanel(elementId, _sendTopic, _runCommand),
             _ => throw new InvalidOperationException(elementId)
         };

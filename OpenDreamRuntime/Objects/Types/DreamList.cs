@@ -1192,6 +1192,45 @@ public sealed class DreamFilterList(DreamObjectDefinition listDef, DreamObject o
         SetFilter(filterIndex, filterObject?.Filter);
     }
 
+    /// <summary>
+    /// BYOND accepts <c>filters += list("type" = "alpha", ...)</c> as one filter.
+    /// A plain list append would add the key <c>"type"</c> and abort the HUD.
+    /// </summary>
+    public override DreamValue OperatorAppend(DreamValue b) {
+        if (b.TryGetValueAsDreamList(out var list)) {
+            using var typeArg = list.GetValue(new DreamValue("type"));
+            if (typeArg != DreamValue.Null) {
+                var created = DreamObjectFilter.TryCreateFilter(ObjectTree, list);
+                if (created != null) {
+                    AddValue(new DreamValue(created));
+                    created.DecRef();
+                }
+            } else {
+                foreach (var item in list.EnumerateValues()) {
+                    if (item.TryGetValueAsDreamObject<DreamObjectFilter>(out _)) {
+                        AddValue(item);
+                        continue;
+                    }
+
+                    if (!item.TryGetValueAsDreamList(out var spec))
+                        continue;
+
+                    var created = DreamObjectFilter.TryCreateFilter(ObjectTree, spec);
+                    if (created == null)
+                        continue;
+
+                    AddValue(new DreamValue(created));
+                    created.DecRef();
+                }
+            }
+
+            IncRef();
+            return new DreamValue(this);
+        }
+
+        return base.OperatorAppend(b);
+    }
+
     public override void AddValue(DreamValue value) {
         if (value.IsNull) // "filters += null" is just ignored
             return;
